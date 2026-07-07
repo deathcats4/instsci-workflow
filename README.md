@@ -1,25 +1,119 @@
-# InstSci Public Beta
+# InstSci Workflow
 
-This is a modified public beta / release-candidate build of InstSci for external review and real-user dogfood testing.
+InstSci Workflow is a public preview build for researchers who want a cleaner way to collect papers, verify access, and hand finished PDFs into Zotero.
 
-InstSci is a research-paper acquisition workflow tool. It looks for Open Access full text first, then helps users use their own legal institutional access through visible-browser workflows when closed-access publisher pages require SSO, CAPTCHA, 2FA, WAF, or institution selection.
+It is based on the MIT-licensed InstSci project and keeps the core idea simple: try Open Access first, use a visible browser only when publisher access really needs it, and leave behind a manifest that explains what happened instead of a pile of mystery folders.
 
-## What This Build Emphasizes
+> Public preview: useful for real DOI batches, but not a promise of universal publisher automation. Different institutions, networks, SSO flows, and publisher WAF rules will change results.
 
-- OA-first fast path for papers that do not need browser verification.
-- Visible-browser evidence for closed-access publisher results.
-- Clear manifest contract: `file_status`, `standard_status`, and `result_evidence`.
-- Diagnosable failure states instead of pretending every DOI should succeed.
-- Zotero handoff and linked local PDF attachment workflow.
-- Clean public package without local profiles, cookies, PDFs, run outputs, or browser binaries.
+## What It Does
 
-## Install for Review
+- Finds Open Access PDFs first, without opening a browser when OA is enough.
+- Uses a visible CloakBrowser flow for closed-access publisher checks.
+- Keeps SSO, CAPTCHA, 2FA, and WAF decisions in the user's hands.
+- Writes auditable manifests with `file_status`, `standard_status`, and `result_evidence`.
+- Groups unresolved publisher work so large DOI batches are easier to resume.
+- Syncs successful items into Zotero and links the matching local PDF.
+
+## What It Is Not
+
+- Not a publisher bypass tool.
+- Not a scraper that ignores access rules.
+- Not a guarantee that every DOI will download.
+- Not a replacement for your library subscription, institutional login, ILL, or author-request workflow.
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `instsci/` | Runnable Python package and CLI implementation. |
+| `skill/` | Codex skill instructions for agent-assisted InstSci workflows. |
+| `docs/InstSci_user_guide_zh.md` | Chinese user guide: local setup, first run, batch strategy, Zotero notes. |
+| `README_REVIEW.md` | External review checklist and validation commands. |
+| `NOTICE_MODIFIED.md` | Attribution and modified-build notice. |
+| `LICENSE` | Original MIT license notice retained from InstSci. |
+
+## Install
+
+For review or local testing:
 
 ```powershell
+git clone https://github.com/deathcats4/instsci-workflow.git
+cd instsci-workflow
 python -m pip install -e .
 ```
 
-## Basic Review Commands
+Recommended environment:
+
+- Windows 10/11 for the visible-browser doctor workflow.
+- Python 3.10 or newer.
+- PowerShell.
+- Network access to DOI/OA services and publisher sites.
+- Your own legal institutional access when closed-access papers are involved.
+- Optional: Zotero Desktop for long-term paper and PDF management.
+
+## First Run
+
+Start with diagnostics:
+
+```powershell
+instsci doctor --full
+instsci publisher-doctor --matrix
+```
+
+Then test a small DOI list:
+
+```powershell
+instsci papers .\dois.txt --publisher auto --output .\runs\papers_demo
+```
+
+Do not start with hundreds of DOI. A good first test is 5-10 mixed papers so you can see OA success, browser-required groups, and failure states.
+
+## Typical Workflow
+
+```powershell
+# 1. Run OA-first and auto publisher grouping
+instsci papers .\dois.txt --publisher auto --output .\runs\papers
+
+# 2. Inspect publisher readiness and unresolved groups
+instsci publisher-doctor --matrix
+
+# 3. Run a specific publisher group when browser access is needed
+instsci papers .\runs\papers\browser_groups\springer_dois.txt --publisher springer --no-oa-first --output .\runs\springer
+
+# 4. Build a next-step plan for failures or unresolved rows
+instsci workflow-plan .\runs\papers
+
+# 5. Send successful items to Zotero and link local PDFs
+instsci zotero handoff .\runs\papers --tags project/example
+instsci zotero sync .\runs\papers --attachment-mode linked_file
+```
+
+## Reading Results
+
+InstSci uses a three-layer result contract:
+
+| Field | Meaning | Examples |
+| --- | --- | --- |
+| `file_status` | Whether a usable PDF file exists. | `success`, `unverified`, `missing` |
+| `standard_status` | What the user or workflow should understand. | `success`, `auth_required`, `access_unavailable`, `waf_blocked`, `publisher_error` |
+| `result_evidence` | How the conclusion was established. | `oa_direct`, `publisher_open_pdf`, `browser_verified`, `http_preflight`, `not_verified` |
+
+The important rule: HTTP checks are preflight only. Final closed-access publisher conclusions should come from visible-browser evidence.
+
+## Zotero
+
+The preferred Zotero flow is boring on purpose: item plus matching PDF attachment.
+
+```powershell
+instsci zotero sync .\runs\papers --attachment-mode linked_file
+```
+
+By default, Zotero sync only includes successful rows with an existing PDF. Process state stays in InstSci manifests; Zotero stays clean.
+
+This pairs well with local attachment-management tools such as Zotero Attanger, because the InstSci manifest keeps the original PDF path and Zotero becomes the long-term literature interface.
+
+## Review Checks
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'
@@ -29,23 +123,20 @@ python -B -m instsci.cli public-audit .
 python -B -m instsci.cli doctor --full --package-path .
 ```
 
-## Typical Usage
+Current package validation before publication:
 
-```powershell
-instsci doctor --full
-instsci papers .\dois.txt --publisher auto --output .\runs\papers
-instsci publisher-doctor --matrix
-instsci zotero handoff .\runs\papers --tags project/example
-instsci zotero sync .\runs\papers --attachment-mode linked_file
-```
+- Python compile: 47/47 files passed.
+- Contract and handoff tests: 48/48 passed.
+- Public package audit: passed.
+- Zip hygiene scan: passed.
+- Institution-specific residue scan: passed.
 
 ## Access and Compliance
 
-This tool is not a publisher bypass tool. It is intended to make legal literature access more batchable, diagnosable, and easier to connect with Zotero. Users must rely on their own Open Access routes, library subscriptions, institutional entitlements, or other lawful access paths.
+InstSci Workflow is intended to make lawful literature acquisition more batchable and diagnosable. Users must rely on Open Access routes, their own library subscriptions, institutional entitlements, interlibrary loan, or other lawful access paths.
 
-## More Docs
+The tool does not ask for passwords and should not automate credentials, OTPs, CAPTCHA, or publisher challenges. When those appear, the user completes them manually in the visible browser.
 
-- `docs/InstSci_user_guide_zh.md`: Chinese user-facing local environment and usage notes.
-- `README_REVIEW.md`: review package details and validation commands.
-- `NOTICE_MODIFIED.md`: attribution and modified-build notice.
-- `skill/`: Codex skill instructions for InstSci workflows.
+## Attribution
+
+This repository is a modified public preview build based on the MIT-licensed InstSci project. See `LICENSE` and `NOTICE_MODIFIED.md` for attribution and license details.

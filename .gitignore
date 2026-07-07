@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# InstSci runtime artifacts
+runs/
+downloads/
+.instsci/
+instsci/_browsers/
+*.pdf
+cookies.json
+carsi_cookies/
+chrome-profile/
+worker-profiles/
+
+# Local diagnostics
+*_doctor_full_report.json
+public_audit_report.json
+zotero_sync_report.json

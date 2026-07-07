@@ -1,35 +1,76 @@
-# InstSci Public Review Package
+# Review Guide
 
-This package is prepared for external review before public beta release.
+This repository is prepared for external review before wider public-beta use.
 
-Contents:
+## Scope
 
-- `instsci_skill/`: Codex skill instructions, references, and helper scripts.
-- `source_patched/`: runnable InstSci source package without local run outputs, build trees, browser binaries, root historical tests, or Python caches.
-- `docs/InstSci_user_guide_zh.md`: public Chinese user-facing usage notes.
+Review this as a modified InstSci workflow build, not as a claim of final stable upstream release. The most important questions are:
 
-Notes:
+- Does the package stay clean of local/private artifacts?
+- Does the source compile in a fresh environment?
+- Are result states consistent and understandable?
+- Does Zotero sync keep item/PDF matching clear?
+- Does the documentation avoid implying publisher bypass behavior?
 
-- This package does not include local browser profiles, cookies, PDFs, run outputs, or bundled CloakBrowser binaries.
-- Closed-access publisher verification still requires a visible browser and the user's own legal institutional access.
-- SSO, CAPTCHA, 2FA, and WAF challenges must be completed by the user. InstSci does not bypass access controls.
-- Review commands should disable bytecode writes so generated Python cache folders do not affect `public-audit`.
+## Included
 
-Recommended review setup:
+- Runnable Python source in `instsci/`.
+- Codex skill instructions in `skill/`.
+- Public Chinese user guide in `docs/InstSci_user_guide_zh.md`.
+- MIT license and modified-build attribution.
+
+## Not Included
+
+- Local browser profiles.
+- Cookies or credential material.
+- PDF outputs.
+- Run folders.
+- Build artifacts or wheel files.
+- Bundled CloakBrowser binaries.
+- Personal creator notes.
+
+## Setup
 
 ```powershell
-cd .\source_patched
 python -m pip install -e .
 ```
 
-Recommended review commands from the package root:
+If your environment writes Python bytecode by default, disable it while auditing:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'
-$env:PYTHONPATH = '.\source_patched'
-python -B -m py_compile (Get-ChildItem .\source_patched\instsci -Recurse -Filter *.py | ForEach-Object FullName)
+```
+
+## Validation Commands
+
+Run these from the repository root:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+python -B -m py_compile (Get-ChildItem .\instsci -Recurse -Filter *.py | ForEach-Object FullName)
 python -B -m unittest instsci.tests.test_public_audit instsci.tests.test_status_contract instsci.tests.test_zotero_mcp_handoff instsci.tests.test_contract_fixtures -v
 python -B -m instsci.cli public-audit .
 python -B -m instsci.cli doctor --full --package-path .
 ```
 
+## Expected Public-Beta Positioning
+
+Good wording:
+
+- public preview
+- public beta
+- release candidate
+- modified InstSci workflow build
+- legal literature acquisition workflow
+
+Avoid wording like:
+
+- final stable
+- universal downloader
+- publisher bypass
+- no-permission PDF downloader
+- fully automated closed-access retrieval
+
+## Reviewer Notes
+
+A failed DOI is not automatically a bug. Useful review feedback should identify the cause when possible: invalid DOI, unsupported publisher, access unavailable, auth required, WAF/human verification, publisher error, or PDF candidate conflict.

@@ -55,7 +55,19 @@ class AuditIssue:
 
 
 def _iter_files(root: Path) -> list[Path]:
-    return [path for path in root.rglob("*") if path.is_file()]
+    skipped_dirs = {".git", ".hg", ".svn"}
+    files: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            parts = set(path.relative_to(root).parts)
+        except ValueError:
+            parts = set(path.parts)
+        if parts & skipped_dirs:
+            continue
+        files.append(path)
+    return files
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -74,6 +86,8 @@ def _is_text_file(path: Path) -> bool:
 def _scan_text_file(root: Path, path: Path, patterns: tuple[tuple[str, str], ...]) -> list[AuditIssue]:
     issues: list[AuditIssue] = []
     if not _is_text_file(path):
+        return issues
+    if path.name.lower() == ".gitignore":
         return issues
     if _is_audit_rule_or_fixture_file(root, path):
         return issues
