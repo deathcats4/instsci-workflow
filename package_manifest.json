@@ -1,0 +1,31 @@
+{
+  "schema": "instsci.public_review_package.v1",
+  "schema_version": 1,
+  "created_at": "2026-07-07T16:39:46.2452408+08:00",
+  "package_name": "instsci_public_review_20260707_163945",
+  "intended_stage": "public_beta_review",
+  "includes": [
+    "instsci_skill",
+    "source_patched",
+    "docs"
+  ],
+  "excludes": [
+    "runs",
+    "downloads",
+    "build",
+    "dist",
+    "Python cache directories",
+    "*.pyc",
+    "instsci/_browsers",
+    "root historical tests",
+    "local browser profiles",
+    "cookies",
+    "PDF outputs"
+  ],
+  "notes": [
+    "source data and docs were sanitized in package copy only",
+    "creator notes are intentionally omitted from public package",
+    "public docs use ASCII filenames for cross-platform zip viewers",
+    "review commands should use PYTHONDONTWRITEBYTECODE or python -B"
+  ]
+}
