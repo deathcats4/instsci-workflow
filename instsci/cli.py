@@ -1404,6 +1404,272 @@ def login(
         raise typer.Exit(1)
 
 
+@app.command("cnki-login")
+def cnki_login(
+    url: str = typer.Option("https://www.cnki.net/", "--url", "-u", help="CNKI page to open in the persistent visible browser."),
+    output: str = typer.Option("", "--output", "-o", help="Private run directory for the screenshot-backed session report."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
+):
+    """Open or refresh the persistent visible CNKI session.
+
+    Complete CAPTCHA, institution checks, or login manually. The full browser
+    profile is reused on later runs; cookies are never exported by this command.
+    """
+    from .cnki_session import open_cnki_login_session, write_cnki_session_report
+
+    _setup_logging(verbose)
+    cfg = Config.load()
+    cfg.ensure_dirs()
+    run_dir = Path(output) if output else Path(cfg.output_dir).parent / "runs" / f"{datetime.now():%Y%m%d_%H%M%S}_cnki_login"
+    context = None
+    try:
+        console.print("[bold]Opening persistent CNKI browser session...[/bold]")
+        console.print(f"[dim]Profile: {cfg.cnki_profile_dir}[/dim]")
+        context, page, run_dir = open_cnki_login_session(cfg, url=url, output_dir=run_dir)
+        console.print("[yellow]Complete any CNKI CAPTCHA, institution check, or login in the visible browser.[/yellow]")
+        typer.prompt("Press Enter here after the CNKI page is ready", default="", show_default=False)
+        report = write_cnki_session_report(page, run_dir, cfg.cnki_profile_dir)
+        status = str(report["session_status"])
+        if status == "session_ready":
+            console.print("[green]CNKI persistent session is ready.[/green]")
+        elif status == "human_verification_required":
+            console.print("[yellow]CNKI still requires visible human verification.[/yellow]")
+        else:
+            console.print("[yellow]CNKI browser ended on an unexpected page.[/yellow]")
+        console.print(f"[dim]Report: {report['report']}[/dim]")
+    finally:
+        if context is not None:
+            context.close()
+
+
+@app.command("cnki-fetch")
+def cnki_fetch(
+    url: str = typer.Argument(help="CNKI article URL saved in Zotero or copied from the article page."),
+    record_id: str = typer.Option("cnki_article", "--record-id", help="Stable local identifier used for the output PDF name."),
+    output: str = typer.Option("", "--output", "-o", help="Private run directory for PDF and browser evidence."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
+):
+    """Download one CNKI PDF through the persistent visible browser session."""
+    from .cnki_session import (
+        capture_cnki_pdf,
+        classify_cnki_session,
+        cnki_verification_visible,
+        open_cnki_login_session,
+        safe_page_url,
+    )
+
+    _setup_logging(verbose)
+    cfg = Config.load()
+    cfg.ensure_dirs()
+    run_dir = Path(output) if output else Path(cfg.output_dir).parent / "runs" / f"{datetime.now():%Y%m%d_%H%M%S}_cnki_fetch"
+    context = None
+    report: dict[str, object] = {
+        "publisher": "CNKI",
+        "record_id": record_id,
+        "route_attempted": "persistent_cloakbrowser_pdf_button",
+        "institution": _configured_subscription_institution(cfg),
+        "file_status": "missing",
+        "standard_status": "capture_failed",
+        "result_evidence": "browser_verified",
+        "next_action": "inspect_visible_cnki_page",
+    }
+    try:
+        context, page, run_dir = open_cnki_login_session(cfg, url=url, output_dir=run_dir)
+        if cnki_verification_visible(page):
+            console.print("[yellow]Complete the visible CNKI verification; InstSci will handle the PDF click.[/yellow]")
+            typer.prompt("Press Enter here after verification", default="", show_default=False)
+        before = run_dir / "before_pdf_click.png"
+        page.screenshot(path=str(before), full_page=False)
+        result = capture_cnki_pdf(page, output_path=run_dir / "pdfs" / f"{record_id}.pdf")
+        if result.get("verification_required"):
+            console.print("[yellow]CNKI requested another verification before download. Complete it in the browser.[/yellow]")
+            typer.prompt("Press Enter here after verification", default="", show_default=False)
+            result = capture_cnki_pdf(page, output_path=run_dir / "pdfs" / f"{record_id}.pdf")
+        after = run_dir / "after_pdf_click.png"
+        page.screenshot(path=str(after), full_page=False)
+        valid = bool(result.get("pdf_header_valid")) and int(result.get("size_bytes") or 0) > 10_000
+        report.update(result)
+        report.update(
+            {
+                "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                "file_status": "success" if valid else "missing",
+                "standard_status": "success" if valid else ("human_verification_required" if result.get("verification_required") else "capture_failed"),
+                "evidence": str(after),
+                "next_action": "verify_pdf_text" if valid else "inspect_visible_cnki_page",
+            }
+        )
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        report_path = run_dir / "manifest.json"
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+
+    if report["file_status"] == "success":
+        console.print(f"[green]CNKI PDF captured: {report['pdf_path']}[/green]")
+        console.print(f"[dim]Manifest: {report_path}[/dim]")
+        return
+    console.print(f"[yellow]CNKI PDF was not captured ({report['standard_status']}).[/yellow]")
+    console.print(f"[dim]Manifest: {report_path}[/dim]")
+    raise typer.Exit(2)
+
+
+@app.command("cnki-batch")
+def cnki_batch(
+    file: Path = typer.Argument(help="JSON array of CNKI records: record_id, title, url, and optional zotero_item_key."),
+    output: str = typer.Option("", "--output", "-o", help="Private run directory for PDFs, screenshots, and manifests."),
+    delay: float = typer.Option(30.0, "--delay", min=2.0, help="Seconds between article downloads."),
+    verification_policy: str = typer.Option("stop", "--verification-policy", help="Human-verification policy: stop or prompt."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
+):
+    """Download a small CNKI batch in one persistent visible browser session."""
+    from .cnki_session import (
+        capture_cnki_pdf,
+        classify_cnki_session,
+        load_cnki_batch,
+        open_cnki_login_session,
+        safe_page_url,
+    )
+    from .extractors import pdf_extractor
+
+    _setup_logging(verbose)
+    try:
+        records = load_cnki_batch(file)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Invalid CNKI batch input: {exc}[/red]")
+        raise typer.Exit(2)
+    if not records:
+        console.print("[yellow]CNKI batch is empty.[/yellow]")
+        return
+    verification_policy = verification_policy.strip().lower()
+    if verification_policy not in {"stop", "prompt"}:
+        console.print("[red]--verification-policy must be 'stop' or 'prompt'.[/red]")
+        raise typer.Exit(2)
+
+    cfg = Config.load()
+    cfg.ensure_dirs()
+    run_dir = Path(output) if output else Path(cfg.output_dir).parent / "runs" / f"{datetime.now():%Y%m%d_%H%M%S}_cnki_batch"
+    pdf_dir = run_dir / "pdfs"
+    evidence_dir = run_dir / "evidence"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = run_dir / "manifest.json"
+    rows: list[dict[str, object]] = []
+    context = None
+
+    def write_checkpoint() -> None:
+        manifest_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary = {
+            "publisher": "CNKI",
+            "total": len(records),
+            "processed": len(rows),
+            "success": sum(row.get("file_status") == "success" for row in rows),
+            "unverified": sum(row.get("file_status") == "unverified" for row in rows),
+            "missing": sum(row.get("file_status") == "missing" for row in rows),
+            "result_evidence": "browser_verified",
+        }
+        (run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    try:
+        context, page, _ = open_cnki_login_session(cfg, url="https://www.cnki.net/", output_dir=run_dir)
+        for index, record in enumerate(records, 1):
+            record_id = record["record_id"]
+            title = record["title"]
+            item_evidence = evidence_dir / record_id
+            item_evidence.mkdir(parents=True, exist_ok=True)
+            row: dict[str, object] = {
+                "publisher": "CNKI",
+                "record_id": record_id,
+                "title": title,
+                "zotero_item_key": record["zotero_item_key"],
+                "route_attempted": "persistent_cloakbrowser_pdf_button",
+                "institution": _configured_subscription_institution(cfg),
+                "file_status": "missing",
+                "standard_status": "capture_failed",
+                "result_evidence": "browser_verified",
+                "next_action": "inspect_visible_cnki_page",
+            }
+            console.print(f"[bold][{index}/{len(records)}][/bold] {title}")
+            try:
+                page.goto(record["url"], wait_until="domcontentloaded", timeout=60_000)
+                time.sleep(3)
+                if classify_cnki_session(str(getattr(page, "url", "") or ""), page.title()) == "human_verification_required":
+                    if verification_policy == "stop":
+                        row.update(
+                            {
+                                "standard_status": "human_verification_required",
+                                "next_action": "resume_with_verification_policy_prompt",
+                            }
+                        )
+                    else:
+                        console.print("[yellow]Complete the visible CNKI verification; InstSci will continue the batch.[/yellow]")
+                        typer.prompt("Press Enter here after verification", default="", show_default=False)
+                if row["standard_status"] == "human_verification_required":
+                    failure = item_evidence / "human_verification_required.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row["evidence"] = str(failure)
+                    rows.append(row)
+                    write_checkpoint()
+                    break
+                before = item_evidence / "before_pdf_click.png"
+                page.screenshot(path=str(before), full_page=False)
+                result = capture_cnki_pdf(page, output_path=pdf_dir / f"{record_id}.pdf", timeout_ms=45_000)
+                if result.get("verification_required"):
+                    if verification_policy == "prompt":
+                        console.print("[yellow]CNKI requested verification before this download. Complete it in the browser.[/yellow]")
+                        typer.prompt("Press Enter here after verification", default="", show_default=False)
+                        result = capture_cnki_pdf(page, output_path=pdf_dir / f"{record_id}.pdf", timeout_ms=45_000)
+                after = item_evidence / "after_pdf_click.png"
+                page.screenshot(path=str(after), full_page=False)
+                pdf_path = Path(str(result.get("pdf_path") or ""))
+                text = pdf_extractor.extract_text(pdf_path) if pdf_path.exists() else ""
+                title_match = "".join(title.split()) in "".join(text.split())
+                valid_pdf = bool(result.get("pdf_header_valid")) and int(result.get("size_bytes") or 0) > 10_000
+                row.update(result)
+                row.update(
+                    {
+                        "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                        "title_match": title_match,
+                        "text_length": len(text),
+                        "file_status": "success" if valid_pdf and title_match else ("unverified" if valid_pdf else "missing"),
+                        "standard_status": "success" if valid_pdf and title_match else ("pdf_candidate_conflict" if valid_pdf else ("human_verification_required" if result.get("verification_required") else "capture_failed")),
+                        "evidence": str(after),
+                        "next_action": "none" if valid_pdf and title_match else "inspect_downloaded_pdf",
+                    }
+                )
+            except Exception as exc:
+                row["error"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    failure = item_evidence / "failure.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row["evidence"] = str(failure)
+                except Exception:
+                    pass
+            rows.append(row)
+            write_checkpoint()
+            if row.get("standard_status") == "human_verification_required" and verification_policy == "stop":
+                break
+            if index < len(records):
+                time.sleep(delay)
+    finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+
+    success = sum(row.get("file_status") == "success" for row in rows)
+    console.print(f"[bold]CNKI batch complete:[/bold] {success}/{len(records)} verified PDFs")
+    console.print(f"[dim]Manifest: {manifest_path}[/dim]")
+    if success != len(records):
+        raise typer.Exit(2)
+
+
 @app.command()
 def fetch(
     identifier: str = typer.Argument(help="DOI or URL of the paper to fetch."),

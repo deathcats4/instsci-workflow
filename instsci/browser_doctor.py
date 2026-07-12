@@ -279,9 +279,10 @@ function Classify-State {
   if ($Url -eq "about:blank" -or ($Title -match "^about:blank|^Chromium$" -and $joined -notmatch "https?://|PDF|Access|robot|problem|CPE")) { return "blank" }
   if ($joined -match "There was a problem providing the content|CPE\d+|content you requested|problem providing the content") { return "publisher_error" }
   if ($joined -match "Cloudflare|Ray ID|DDoS|security check|temporarily unavailable|too many requests|unusual traffic|blocked by security|Attention Required") { return "waf_blocked" }
-  if ($joined -match "confirm you are human|verify you are human|checking if the site connection is secure|checking your browser|press and hold|checkbox|robot check|Are you a robot|captcha|Turnstile|human verification|请完成验证|人机验证|安全验证") { return "human_verification_required" }
+  $verificationText = (@($Title) + @($Texts)) -join "`n"
+  if ($Url -match "(?i)/verify/|[?&]captchaType=" -or $verificationText -match "confirm you are human|verify you are human|checking if the site connection is secure|checking your browser|press and hold|checkbox|robot check|Are you a robot|captcha|Turnstile|human verification|请完成验证|人机验证|安全验证") { return "human_verification_required" }
   if ($joined -match "Access denied|not entitled|no access|your institution does not have access|purchase access|Purchase PDF|get access|rent this article|无权访问|无法访问|购买") { return "access_unavailable" }
-  if ($joined -match "Access provided by|Open PDF|institutional subscription|View PDF|Full text access|PDF loaded") { return "pdf_or_authorized" }
+  if ($joined -match "Access provided by|Open PDF|institutional subscription|View PDF|Full text access|PDF loaded|PDF下载|CAJ下载|原版阅读") { return "pdf_or_authorized" }
   if ($joined -match "Access through your organization|Organization name|Find your institution|institution login|institutional login|OpenAthens|Shibboleth") { return "auth_required" }
   if ((($Title + "`n" + $Url) -match "(?i)sign\s*in|log\s*in|login|signin|sign-in|openathens|shibboleth") -and $joined -notmatch "MDPI Open Access Journals") { return "auth_required" }
   return "unknown_visible"
