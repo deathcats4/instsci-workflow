@@ -219,7 +219,7 @@ class PublicLanguageTests(unittest.TestCase):
         self.assertIn("ignored by Git", text)
 
     def test_inst_sci_skill_guides_elsevier_global_setup_without_requiring_inst_token(self):
-        text = Path("skill/SKILL.md").read_text(encoding="utf-8")
+        text = Path("skills/instsci/SKILL.md").read_text(encoding="utf-8")
 
         self.assertIn("Elsevier API", text)
         self.assertIn("global", text.lower())
@@ -247,6 +247,5 @@ class PublicLanguageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 

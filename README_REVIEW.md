@@ -15,7 +15,7 @@ Review this as a modified InstSci workflow build, not as a claim of final stable
 ## Included
 
 - Runnable Python source in `instsci/`.
-- Codex skill instructions in `skill/`.
+- Codex skill instructions in the standard `skills/instsci/` directory.
 - MIT license and modified-build attribution.
 
 ## Not Included

@@ -75,7 +75,7 @@ class SearchPipelineTests(TestCase):
 
     def test_readme_and_skill_expose_discovery_to_zotero_flow(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")
-        skill = Path("skill/SKILL.md").read_text(encoding="utf-8")
+        skill = Path("skills/instsci/SKILL.md").read_text(encoding="utf-8")
         for text in (readme, skill):
             self.assertIn("instsci search", text)
             self.assertIn("instsci select", text)

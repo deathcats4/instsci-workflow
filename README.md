@@ -29,17 +29,44 @@ It is based on the MIT-licensed InstSci project and keeps the core idea simple: 
 | Path | Purpose |
 | --- | --- |
 | `instsci/` | Runnable Python package and CLI implementation. |
-| `skill/` | Codex skill instructions for agent-assisted InstSci workflows. |
+| `skills/instsci/` | Standard Codex skill package for agent-assisted InstSci workflows. |
+| `scripts/Install-InstSci.ps1` | Local installer for the CLI, MCP server, and Codex skill. |
 | `README_REVIEW.md` | External review checklist and validation commands. |
 | `NOTICE_MODIFIED.md` | Attribution and modified-build notice. |
 | `LICENSE` | Original MIT license notice retained from InstSci. |
 
 ## Install
 
-For review or local testing:
+For a local Windows installation of the CLI, MCP server, and Codex skill:
 
 ```powershell
 git clone https://github.com/deathcats4/instsci-workflow.git
+powershell -ExecutionPolicy Bypass -File .\instsci-workflow\scripts\Install-InstSci.ps1
+```
+
+The installer places the skill at the standard `$CODEX_HOME/skills/instsci` location
+(normally `~/.codex/skills/instsci`). It prefers `uv tool`, then `pipx`, and finally
+the current Python environment. Preview every action without changing the machine:
+
+```powershell
+.\scripts\Install-InstSci.ps1 -DryRun
+```
+
+For the CLI and MCP server only, either tool can install directly from GitHub:
+
+```powershell
+uv tool install git+https://github.com/deathcats4/instsci-workflow.git
+# or
+pipx install git+https://github.com/deathcats4/instsci-workflow.git
+```
+
+In Codex, the equivalent natural-language request is:
+
+> Install the InstSci skill from `https://github.com/deathcats4/instsci-workflow/tree/main/skills/instsci`.
+
+For editable development instead of a tool installation:
+
+```powershell
 cd instsci-workflow
 python -m pip install -e .
 ```
@@ -163,8 +190,8 @@ python -B -m instsci.cli doctor --full --package-path .
 
 Current package validation before publication:
 
-- Python compile: 75/75 files passed.
-- Unit and regression tests: 299/299 passed (`1` live publisher smoke test skipped unless explicitly enabled).
+- Python compile: 76/76 files passed.
+- Unit and regression tests: 304/304 passed (`1` live publisher smoke test skipped unless explicitly enabled).
 - Public package audit: passed.
 - Zip hygiene scan: passed.
 - Institution-specific residue scan: passed.
