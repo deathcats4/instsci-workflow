@@ -1,0 +1,4 @@
+interface:
+  display_name: "InstSci"
+  short_description: "Literature search, PDF access, and Zotero workflow"
+  default_prompt: "Use $instsci to search for papers, select DOI records, acquire verified PDFs, and sync successful results to Zotero."

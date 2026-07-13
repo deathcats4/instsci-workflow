@@ -83,6 +83,24 @@ For final manifests, keep Markdown, CSV, and JSON counts consistent. `file_statu
 
 ## Zotero Sync
 
+Use the complete discovery-to-library path when the user starts from a topic
+rather than an existing DOI list:
+
+```powershell
+instsci search "research topic" --limit 50 --year 2020- --output .\runs\search.json
+instsci select .\runs\search.json --indices "1,3-8" --output .\runs\selected_dois.txt
+instsci papers .\runs\selected_dois.txt --publisher auto --output .\runs\papers
+instsci zotero sync .\runs\papers --attachment-mode linked_file
+```
+
+`search` queries Semantic Scholar, OpenAlex, and Crossref by default and merges
+records by normalized DOI. Treat citation counts as source-specific metadata;
+do not describe the maximum merged value as a single authoritative count.
+`search --output` creates reviewable JSON or CSV. `select` uses one-based result
+indices, removes duplicate DOI values, skips rows without a DOI, and writes a
+neighboring selection report. Do not silently acquire every search hit when the
+user asked to review or choose papers first.
+
 After `papers` or `publisher-batch` writes a run manifest, keep Zotero as the long-term paper entry point:
 
 ```powershell
@@ -119,6 +137,19 @@ instsci publisher-doctor --matrix
 `publisher-doctor --matrix` is a planning view, not a fresh access verdict. It summarizes the local publisher capability matrix with `ready`, `prewarm_required`, `waf_risky`, `unsupported`, `batch_recommendation`, `known_blocker`, and machine-readable `suggested_paths`.
 
 Use this panel to decide whether to run a normal batch, run a single-DOI prewarm first, switch to a manual browser check, retry later, or avoid a bulk run. For final publisher PDF verdicts, still use the visible CloakBrowser-backed workflow.
+
+## Public and Private Evidence
+
+Treat `instsci/data/*.json` as distributable route knowledge or anonymized
+planning summaries only. Keep institution-specific screenshots, subscription
+observations, run paths, cookies, and browser state outside the repository.
+
+Use `instsci evidence policy` to inspect the boundary. When a private run needs
+long-term traceability, use `instsci evidence register RUN_DIR`; this creates a
+reference-only entry under `~/.instsci/private-evidence` with a manifest hash and
+does not copy PDFs, screenshots, cookies, or browser profiles. Never publish the
+private index. Any proposed public summary must be separately anonymized and pass
+`instsci public-audit`.
 
 ## Detailed Reference
 

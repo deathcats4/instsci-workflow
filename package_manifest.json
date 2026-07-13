@@ -6,7 +6,8 @@
   "intended_stage": "public_preview",
   "includes": [
     "instsci",
-    "skill",
+    "skills/instsci",
+    "scripts/Install-InstSci.ps1",
     "README.md",
     "README_REVIEW.md",
     "NOTICE_MODIFIED.md",

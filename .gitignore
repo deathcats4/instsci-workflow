@@ -32,6 +32,9 @@ cookies.json
 carsi_cookies/
 chrome-profile/
 worker-profiles/
+private-evidence/
+private_evidence/
+*.private.json
 
 # Local diagnostics
 *_doctor_full_report.json

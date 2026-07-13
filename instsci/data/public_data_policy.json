@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "purpose": "Separate distributable route knowledge from private browser-backed evidence.",
+  "public_assets": [
+    "institutional_identity_policy.json",
+    "publisher_access_catalog.json",
+    "publisher_browser_verification_matrix.json",
+    "publisher_capability_matrix.json",
+    "publisher_carsi.json",
+    "webvpn.json"
+  ],
+  "public_asset_rules": [
+    "No credentials, cookies, browser profiles, personal institution identity, or local paths.",
+    "Publisher matrices are planning summaries, not fresh entitlement verdicts.",
+    "Institution entries must be public route knowledge or explicit placeholders with provenance-safe notes."
+  ],
+  "private_assets": [
+    "institution-specific browser verification records",
+    "screenshots and diagnostic paths",
+    "subscription and entitlement observations",
+    "run manifests containing local paths or institution names"
+  ],
+  "private_default": "~/.instsci/private-evidence",
+  "private_storage_rule": "Keep an external index that references original run evidence; do not copy PDFs, cookies, or browser profiles into the index or public repository.",
+  "publication_rule": "Only publish a separately reviewed, anonymized summary after public-audit passes."
+}

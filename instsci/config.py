@@ -25,6 +25,8 @@ class Config:
     cache_dir: str = ""
     cookie_path: str = ""
     chrome_profile_dir: str = ""
+    cnki_profile_dir: str = ""  # Dedicated persistent CNKI browser profile
+    private_evidence_dir: str = ""  # External index for private browser evidence references
     carsi_enabled: bool = False  # Enable CARSI/Shibboleth federated auth
     carsi_idp_name: str = ""  # University name for CARSI WAYF (e.g. "中国海洋大学")
     institution_name_zh: str = ""  # User's subscription institution name in Chinese/local form
@@ -45,6 +47,10 @@ class Config:
             self.cookie_path = str(base / "cookies.json")
         if not self.chrome_profile_dir:
             self.chrome_profile_dir = str(base / "chrome-profile")
+        if not self.cnki_profile_dir:
+            self.cnki_profile_dir = str(base / "cnki-profile")
+        if not self.private_evidence_dir:
+            self.private_evidence_dir = str(base / "private-evidence")
         if not self.carsi_cookie_dir:
             self.carsi_cookie_dir = str(base / "carsi_cookies")
         # Auto-resolve campus/library access URL from school if not set.
@@ -61,7 +67,13 @@ class Config:
 
     def ensure_dirs(self):
         """Create all necessary directories."""
-        for d in [self.output_dir, self.cache_dir, self.chrome_profile_dir, self.carsi_cookie_dir]:
+        for d in [
+            self.output_dir,
+            self.cache_dir,
+            self.chrome_profile_dir,
+            self.cnki_profile_dir,
+            self.carsi_cookie_dir,
+        ]:
             Path(d).mkdir(parents=True, exist_ok=True)
         Path(self.cookie_path).parent.mkdir(parents=True, exist_ok=True)
 

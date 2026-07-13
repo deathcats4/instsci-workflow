@@ -9,7 +9,7 @@ from typing import Any
 
 _CLOAKBROWSER_CACHE_ENV = "CLOAKBROWSER_CACHE_DIR"
 _INSTSCI_CACHE_ENV = "INSTSCI_CLOAKBROWSER_CACHE_DIR"
-_BUILTIN_CACHE_DIR = Path(__file__).resolve().parent / "_browsers" / "cloakbrowser"
+_DEFAULT_CACHE_DIR = Path.home() / ".instsci" / "browsers" / "cloakbrowser"
 
 
 def configure_builtin_cloakbrowser(
@@ -17,17 +17,17 @@ def configure_builtin_cloakbrowser(
     *,
     create_dir: bool = True,
 ) -> Path:
-    """Point CloakBrowser at InstSci's project-managed browser cache.
+    """Point CloakBrowser at InstSci's user-managed browser cache.
 
     CloakBrowser downloads its Chromium binary on first use. InstSci keeps that
-    binary under the project package by default so publisher workflows use the
-    same built-in browser instead of an unrelated user-level cache.
+    mutable runtime outside the source tree and installed Python package while
+    still sharing one browser build across InstSci publisher workflows.
     """
     existing = os.environ.get(_CLOAKBROWSER_CACHE_ENV)
     if existing:
         return Path(existing)
 
-    target = Path(cache_dir or os.environ.get(_INSTSCI_CACHE_ENV, "") or _BUILTIN_CACHE_DIR)
+    target = Path(cache_dir or os.environ.get(_INSTSCI_CACHE_ENV, "") or _DEFAULT_CACHE_DIR)
     target = target.expanduser().resolve()
     if create_dir:
         target.mkdir(parents=True, exist_ok=True)

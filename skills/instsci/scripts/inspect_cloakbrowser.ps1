@@ -144,6 +144,7 @@ function Classify-State {
   if ($joined -match "Ray ID|Attention Required|temporarily blocked|blocked by security|too many requests|unusual traffic") { return "waf_blocked" }
   if ($joined -match "Are you a robot|captcha|Turnstile|verify you are human|human verification|security check|请完成验证|人机验证|安全验证") { return "human_verification_required" }
   if ($joined -match "Access denied|not entitled|no access|your institution does not have access|purchase access|Purchase PDF|get access|rent this article|无权访问|无法访问|购买") { return "access_unavailable" }
+  if ($joined -match "Open Access" -and $joined -match "View PDF|Full text|PDF loaded|Download") { return "pdf_or_authorized" }
   if ($joined -match "Access through your organization|Organization name|institution|Sign in|Find your organization|机构|登录|组织") { return "auth_required" }
   if ($joined -match "View PDF|Full text access|PDF loaded|Download") { return "pdf_or_authorized" }
   return "unknown_visible"
@@ -154,8 +155,8 @@ $profileFilterRaw = if (-not [string]::IsNullOrWhiteSpace($BrowserProfile)) { $B
 $profileFilter = Normalize-PathForCompare -PathValue $profileFilterRaw
 
 $processes = Get-CimInstance Win32_Process | Where-Object {
-  ($_.ExecutablePath -like '*instsci*_browsers*cloakbrowser*chrome.exe') -or
-  ($_.CommandLine -match 'instsci[\\/]+_browsers[\\/]+cloakbrowser')
+  ($_.ExecutablePath -match '[\\/]cloakbrowser[\\/]chromium-[^\\/]+[\\/]chrome\.exe$') -or
+  ($_.CommandLine -match '[\\/]cloakbrowser[\\/]chromium-[^\\/]+[\\/]chrome\.exe')
 }
 
 $windowRows = @()
