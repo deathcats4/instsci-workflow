@@ -1972,6 +1972,9 @@ def wanfang_batch(
         open_wanfang_session,
         safe_wanfang_url,
         WANFANG_HOST_SUFFIXES,
+        wanfang_downloaded_pdf_path,
+        summarize_wanfang_capture_result,
+        wanfang_next_action_for_result,
         wanfang_verification_visible,
     )
     from .chinese_literature import chinese_literature_session_domains
@@ -2136,37 +2139,24 @@ def wanfang_batch(
                         )
                 row.update(result)
                 row["after_screenshots"] = screenshot_pages(item_evidence, "after_download")
-                pdf_path = Path(str(result.get("pdf_path") or ""))
-                text = pdf_extractor.extract_text(pdf_path) if pdf_path.exists() else ""
-                title_match = bool(result.get("filename_title_match")) or ("".join(title.split()) in "".join(text.split()))
-                valid_pdf = bool(result.get("pdf_header_valid")) and int(result.get("size_bytes") or 0) > 10_000
-                success = valid_pdf and (title_match or not strict_title_match)
-                standard_status = (
-                    "success"
-                    if success
-                    else (
-                        "pdf_candidate_conflict"
-                        if valid_pdf
-                        else ("human_verification_required" if result.get("verification_required") else "capture_failed")
-                    )
+                pdf_path = wanfang_downloaded_pdf_path(result)
+                text = pdf_extractor.extract_text(pdf_path) if pdf_path else ""
+                capture_summary = summarize_wanfang_capture_result(
+                    result,
+                    title=title,
+                    text=text,
+                    strict_title_match=strict_title_match,
+                    pdf_path=pdf_path,
                 )
                 row.update(
                     {
                         "article_url": safe_wanfang_url(str(getattr(page, "url", "") or "")),
-                        "title_match": title_match,
-                        "text_length": len(text),
-                        "file_status": "success" if success else ("unverified" if valid_pdf else "missing"),
-                        "standard_status": standard_status,
+                        "title_match": capture_summary["title_match"],
+                        "text_length": capture_summary["text_length"],
+                        "file_status": capture_summary["file_status"],
+                        "standard_status": capture_summary["standard_status"],
                         "evidence": (row.get("after_screenshots") or row.get("before_screenshots") or [""])[0],
-                        "next_action": (
-                            "none"
-                            if standard_status == "success"
-                            else (
-                                "complete_visible_human_verification_then_rerun_same_output"
-                                if standard_status == "human_verification_required"
-                                else "inspect_downloaded_pdf"
-                            )
-                        ),
+                        "next_action": wanfang_next_action_for_result(str(capture_summary["standard_status"]), result),
                     }
                 )
             except Exception as exc:

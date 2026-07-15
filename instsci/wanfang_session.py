@@ -25,10 +25,21 @@ WANFANG_HOST_SUFFIXES = WANFANG_PORTAL.hosts
 WANFANG_VISIBLE_VERIFICATION_MARKERS = WANFANG_PORTAL.verification_markers
 WANFANG_DOWNLOAD_POPUP_HOST = "oss.wanfangdata.com.cn"
 WANFANG_DOWNLOAD_POPUP_PATH = "/Fulltext/Download"
+WANFANG_RESULT_ROW_SELECTOR = ".normal-list,.result-item,.wf-list-item,li[data-record-id]"
+WANFANG_RESULT_TITLE_SELECTOR = ".title,a[title],h2,h3,h4"
+WANFANG_DOWNLOAD_CONTROL_SELECTOR = "a,button,div,span"
+WANFANG_DOWNLOAD_LABELS = {"下载", "整篇下载"}
 
 
 def _compact_text(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _capture_size_bytes(result: dict[str, object]) -> int:
+    try:
+        return int(result.get("size_bytes") or 0)
+    except Exception:
+        return 0
 
 
 def _host_matches(host: str, suffixes: tuple[str, ...]) -> bool:
@@ -141,6 +152,144 @@ def wanfang_search_results_visible(page: Any, *, title: str = "") -> bool:
         return False
 
 
+def extract_wanfang_download_candidates_from_html(html: str, *, title: str = "") -> list[dict[str, object]]:
+    """Extract Wanfang download candidates from explicit result rows in an HTML fixture."""
+    from bs4 import BeautifulSoup
+
+    expected = _compact_text(title)
+    soup = BeautifulSoup(html or "", "html.parser")
+    candidates: list[dict[str, object]] = []
+    for row_index, row in enumerate(soup.select(WANFANG_RESULT_ROW_SELECTOR)):
+        row_titles: list[tuple[str, str]] = []
+        for title_node in row.select(WANFANG_RESULT_TITLE_SELECTOR):
+            raw_title = str(title_node.get("title") or title_node.get_text(" ", strip=True) or "").strip()
+            compact_title = _compact_text(raw_title)
+            if raw_title and compact_title and (raw_title, compact_title) not in row_titles:
+                row_titles.append((raw_title, compact_title))
+        matching_titles = [raw for raw, compact in row_titles if expected and compact == expected]
+        row_title_match = bool(matching_titles)
+        row_title = matching_titles[0] if matching_titles else (row_titles[0][0] if row_titles else "")
+        for control in row.select(WANFANG_DOWNLOAD_CONTROL_SELECTOR):
+            text = _compact_text(str(control.get_text(" ", strip=True) or control.get("title") or ""))
+            if text not in WANFANG_DOWNLOAD_LABELS:
+                continue
+            candidates.append(
+                {
+                    "index": len(candidates),
+                    "text": text,
+                    "cls": " ".join(control.get("class") or []),
+                    "href": str(control.get("href") or ""),
+                    "row_title_match": row_title_match,
+                    "row_title": row_title,
+                    "row_titles": [raw for raw, _compact in row_titles],
+                    "row_index": row_index,
+                    "page_title_match": bool(expected and expected in _compact_text(soup.get_text(" ", strip=True))),
+                }
+            )
+    return candidates
+
+
+def choose_wanfang_download_candidate(candidates: list[dict[str, object]], *, title: str = "") -> dict[str, object] | None:
+    """Choose a Wanfang download control only when its own result row matches the title."""
+    expected = _compact_text(title)
+    scored: list[tuple[int, dict[str, object]]] = []
+    for candidate in candidates:
+        text = _compact_text(str(candidate.get("text") or ""))
+        if text not in {"下载", "整篇下载"}:
+            continue
+        if expected and not bool(candidate.get("row_title_match")):
+            continue
+        score = 0
+        if text == "下载":
+            score += 100
+        elif text == "整篇下载":
+            score += 90
+        cls = str(candidate.get("cls") or "")
+        if "wf-list-button" in cls:
+            score += 50
+        if "t-DIB" in cls:
+            score += 20
+        if bool(candidate.get("row_title_match")):
+            score += 80
+        try:
+            distance = abs(float(candidate.get("title_y_distance")))
+        except Exception:
+            distance = 9999
+        if distance <= 220:
+            score += 20
+        scored.append((score, candidate))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    chosen = dict(scored[0][1])
+    chosen["score"] = scored[0][0]
+    return chosen
+
+
+def summarize_wanfang_capture_result(
+    result: dict[str, object],
+    *,
+    title: str,
+    text: str,
+    strict_title_match: bool,
+    pdf_path: Path | None = None,
+) -> dict[str, object]:
+    """Return manifest status fields for a captured Wanfang download result."""
+    resolved_pdf_path = wanfang_downloaded_pdf_path(result) if pdf_path is None else pdf_path
+    title_match = bool(result.get("filename_title_match")) or (_compact_text(title) in _compact_text(text))
+    valid_pdf = (
+        resolved_pdf_path is not None
+        and bool(result.get("pdf_header_valid"))
+        and _capture_size_bytes(result) > 10_000
+    )
+    success = valid_pdf and (title_match or not strict_title_match)
+    standard_status = (
+        "success"
+        if success
+        else (
+            "pdf_candidate_conflict"
+            if valid_pdf
+            else ("human_verification_required" if result.get("verification_required") else "capture_failed")
+        )
+    )
+    return {
+        "title_match": title_match,
+        "valid_pdf": valid_pdf,
+        "text_length": len(text),
+        "file_status": "success" if success else ("unverified" if valid_pdf else "missing"),
+        "standard_status": standard_status,
+    }
+
+
+def wanfang_next_action_for_result(standard_status: str, result: dict[str, object]) -> str:
+    """Return a Wanfang-specific next action for batch manifest rows."""
+    if standard_status == "success":
+        return "none"
+    if standard_status == "human_verification_required":
+        return "complete_visible_human_verification_then_rerun_same_output"
+    download_click = result.get("download_click") if isinstance(result.get("download_click"), dict) else {}
+    reason = str(result.get("reason") or download_click.get("reason") or "")
+    if reason == "no_exact_title_result":
+        return "inspect_wanfang_search_results_or_refine_query"
+    if standard_status == "capture_failed" and (
+        reason in {"no_download_control", "candidate_disappeared", "candidate_changed", "no_retry_control", "download_timeout"}
+        or wanfang_downloaded_pdf_path(result) is None
+    ):
+        return "inspect_visible_wanfang_page_and_retry"
+    return "inspect_downloaded_pdf"
+
+
+def wanfang_downloaded_pdf_path(result: dict[str, object]) -> Path | None:
+    """Return the captured PDF path only when it names a file."""
+    raw_path = str(result.get("pdf_path") or "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if not path.exists() or not path.is_file():
+        return None
+    return path
+
+
 def navigate_wanfang_search(
     page: Any,
     *,
@@ -187,59 +336,135 @@ def navigate_wanfang_search(
 def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, object]:
     """Click the best matching result-row Wanfang download control."""
     expected = _compact_text(title)
+    script_args = {
+        "expected": expected,
+        "row_selector": WANFANG_RESULT_ROW_SELECTOR,
+        "title_selector": WANFANG_RESULT_TITLE_SELECTOR,
+        "control_selector": WANFANG_DOWNLOAD_CONTROL_SELECTOR,
+        "labels": sorted(WANFANG_DOWNLOAD_LABELS),
+    }
     try:
-        raw = page.evaluate(
-            """(expected) => {
+        raw_candidates = page.evaluate(
+            """(args) => {
+              const expected = args.expected || "";
+              const rowSelector = args.row_selector;
+              const titleSelector = args.title_selector;
+              const controlSelector = args.control_selector;
+              const labels = args.labels || [];
               const norm = (s) => String(s || "").replace(/\\s+/g, "").toLowerCase();
               const visible = (el) => {
                 const r = el.getBoundingClientRect();
                 const s = getComputedStyle(el);
                 return r.width > 1 && r.height > 1 && s.display !== "none" && s.visibility !== "hidden";
               };
-              const titleRects = [...document.querySelectorAll("a,div,span")]
-                .filter((el) => expected && norm(el.innerText || el.title || "").includes(expected) && visible(el))
-                .map((el) => el.getBoundingClientRect());
-              const candidates = [...document.querySelectorAll("a,button,div,span")].map((el, index) => {
+              const titleValue = (el) => String(el.getAttribute("title") || el.innerText || "").trim();
+              const rowTitleValues = (row) => [...row.querySelectorAll(titleSelector)]
+                .map((el) => ({ raw: titleValue(el), compact: norm(titleValue(el)) }))
+                .filter((item) => item.raw && item.compact);
+              const candidateFromControl = (el, index, row) => {
                 const r = el.getBoundingClientRect();
-                const text = (el.innerText || el.title || "").replace(/\\s+/g, "").trim();
-                const cls = String(el.className || "");
-                const containerText = norm(el.closest(".right-list,.result-item,.wf-list-item,li,.me-container")?.innerText || "");
-                let score = 0;
-                if (text === "下载") score += 100;
-                if (cls.includes("wf-list-button")) score += 50;
-                if (cls.includes("t-DIB")) score += 20;
-                if (containerText && expected && containerText.includes(expected)) score += 60;
-                if (titleRects.some((tr) => Math.abs((tr.y + tr.height / 2) - (r.y + r.height / 2)) < 180)) score += 40;
-                if (text.includes("批量") || text.includes("下载：")) score -= 100;
+                const rowRect = row ? row.getBoundingClientRect() : null;
+                const rowTitles = row ? rowTitleValues(row) : [];
+                const matchingTitles = rowTitles.filter((item) => expected && item.compact === expected);
+                const titleRects = row
+                  ? [...row.querySelectorAll(titleSelector)]
+                      .filter((node) => visible(node) && expected && norm(titleValue(node)) === expected)
+                      .map((node) => node.getBoundingClientRect())
+                  : [];
+                const titleDistance = titleRects.length
+                  ? Math.min(...titleRects.map((tr) => Math.abs((tr.y + tr.height / 2) - (r.y + r.height / 2))))
+                  : 9999;
+                const candidateId = `instsci-wanfang-${Date.now()}-${Math.random().toString(36).slice(2)}-${index}`;
+                el.setAttribute("data-inst-candidate-id", candidateId);
                 return {
-                  el, index, text, cls, href: el.href || "",
-                  x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
-                  score
+                  index,
+                  candidate_id: candidateId,
+                  text: (el.innerText || el.title || "").replace(/\\s+/g, "").trim(),
+                  cls: String(el.className || ""),
+                  href: el.href || "",
+                  x: Math.round(r.x),
+                  y: Math.round(r.y),
+                  w: Math.round(r.width),
+                  h: Math.round(r.height),
+                  row_title_match: Boolean(matchingTitles.length),
+                  row_title: matchingTitles[0]?.raw || rowTitles[0]?.raw || "",
+                  row_titles: rowTitles.map((item) => item.raw),
+                  page_title_match: Boolean(expected && norm(document.body?.innerText || "").includes(expected)),
+                  row_y: rowRect ? Math.round(rowRect.y) : null,
+                  row_h: rowRect ? Math.round(rowRect.height) : null,
+                  title_y_distance: Math.round(titleDistance),
                 };
-              }).filter((x) => visible(x.el) && x.score > 0).sort((a, b) => b.score - a.score);
-              const best = candidates[0];
-              if (!best || best.score < 80) {
-                return { clicked: false, result_found: false, candidate_count: candidates.length };
-              }
-              best.el.scrollIntoView({ block: "center", inline: "center" });
-              best.el.click();
-              return {
-                clicked: true,
-                result_found: true,
-                text: best.text,
-                href: best.href,
-                cls: best.cls,
-                x: best.x,
-                y: best.y,
-                w: best.w,
-                h: best.h,
-                score: best.score,
-                candidate_count: candidates.length,
               };
+              const allControls = [...document.querySelectorAll(controlSelector)];
+              const bodyText = norm(document.body?.innerText || "");
+              const candidates = allControls.map((el, index) => {
+                const text = (el.innerText || el.title || "").replace(/\\s+/g, "").trim();
+                const row = el.closest(rowSelector);
+                if (!visible(el) || !labels.includes(text) || !row) return null;
+                const candidate = candidateFromControl(el, index, row);
+                candidate.page_title_match = Boolean(expected && bodyText.includes(expected));
+                return candidate;
+              }).filter(Boolean);
+              return candidates;
             }""",
-            expected,
+            script_args,
         )
-        result = dict(raw or {})
+        candidates = [dict(candidate) for candidate in (raw_candidates or [])]
+        best = choose_wanfang_download_candidate(candidates, title=title)
+        if not best:
+            return {
+                "clicked": False,
+                "result_found": False,
+                "reason": "no_exact_title_result" if expected else "no_download_control",
+                "candidate_count": len(candidates),
+            }
+        raw = page.evaluate(
+            """(selection) => {
+              const expected = selection.expected || "";
+              const rowSelector = selection.row_selector;
+              const titleSelector = selection.title_selector;
+              const controlSelector = selection.control_selector;
+              const labels = selection.labels || [];
+              const norm = (s) => String(s || "").replace(/\\s+/g, "").toLowerCase();
+              const visible = (el) => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 1 && r.height > 1 && s.display !== "none" && s.visibility !== "hidden";
+              };
+              const titleValue = (el) => String(el.getAttribute("title") || el.innerText || "").trim();
+              const rowTitleValues = (row) => [...row.querySelectorAll(titleSelector)]
+                .map((el) => ({ raw: titleValue(el), compact: norm(titleValue(el)) }))
+                .filter((item) => item.raw && item.compact);
+              const controls = [...document.querySelectorAll(controlSelector)];
+              const el = controls.find((node) => node.getAttribute("data-inst-candidate-id") === selection.candidate_id);
+              if (!el) return { clicked: false, result_found: false, reason: "candidate_changed" };
+              const row = el.closest(rowSelector);
+              const text = (el.innerText || el.title || "").replace(/\\s+/g, "").trim();
+              const href = el.href || "";
+              const rowTitles = row ? rowTitleValues(row) : [];
+              const rowTitleMatch = Boolean(rowTitles.find((item) => expected && item.compact === expected));
+              if (
+                !visible(el) ||
+                !row ||
+                !labels.includes(text) ||
+                text !== selection.text ||
+                (selection.href && href !== selection.href) ||
+                (expected && !rowTitleMatch)
+              ) {
+                return { clicked: false, result_found: false, reason: "candidate_changed" };
+              }
+              el.scrollIntoView({ block: "center", inline: "center" });
+              el.click();
+              return { clicked: true, result_found: true, text, href, row_title: rowTitles[0]?.raw || "" };
+            }""",
+            {
+                **script_args,
+                "candidate_id": str(best.get("candidate_id") or ""),
+                "text": str(best.get("text") or ""),
+                "href": str(best.get("href") or ""),
+            },
+        )
+        result = {**best, **dict(raw or {}), "candidate_count": len(candidates)}
         if result.get("href"):
             result["href"] = safe_wanfang_url(str(result["href"]))
         return result
