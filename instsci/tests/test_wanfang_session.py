@@ -33,6 +33,17 @@ class WanfangSessionTests(TestCase):
             "human_verification_required",
         )
 
+    def test_classify_wanfang_auth_page_requires_login(self) -> None:
+        self.assertEqual(
+            classify_wanfang_page("https://login.example.edu/sso", "统一身份认证", auth_domains=("login.example.edu",)),
+            "auth_required",
+        )
+
+    def test_classify_wanfang_portal_is_ready_not_login_verified(self) -> None:
+        self.assertEqual(
+            classify_wanfang_page("https://s.wanfangdata.com.cn/paper?q=测试", "万方数据"),
+            "portal_ready",
+        )
     def test_load_wanfang_batch_validates_records(self) -> None:
         with TemporaryDirectory() as tmp:
             source = Path(tmp) / "batch.json"

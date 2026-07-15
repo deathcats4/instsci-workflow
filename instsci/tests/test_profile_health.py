@@ -85,6 +85,7 @@ class ProfileHealthTests(unittest.TestCase):
             cookie_path="cookies.json",
             chrome_profile_dir=str(Path("chosen-profile")),
             cnki_profile_dir=str(Path("cnki-profile")),
+            wanfang_profile_dir=str(Path("wanfang-profile")),
             carsi_cookie_dir="carsi",
         )
 
@@ -95,8 +96,10 @@ class ProfileHealthTests(unittest.TestCase):
             [
                 Path("chosen-profile"),
                 Path("cnki-profile"),
+                Path("wanfang-profile"),
                 DEFAULT_BASE_DIR / "chrome-profile",
                 DEFAULT_BASE_DIR / "cnki-profile",
+                DEFAULT_BASE_DIR / "wanfang-profile",
                 Path("workspace") / ".chrome-sciencedirect",
             ],
         )
@@ -115,4 +118,3 @@ class ProfileHealthTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

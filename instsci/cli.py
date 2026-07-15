@@ -1425,19 +1425,15 @@ def chinese_literature_sites(
         get_chinese_literature_portal,
     )
 
-    report = chinese_literature_portal_report()
     if site:
         try:
             portal = get_chinese_literature_portal(site)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(2)
-        report["portals"] = [portal.to_json()]
-        report["summary"] = {
-            "portals": 1,
-            "capability_counts": {portal.capability: 1},
-            "verified_portals": [portal.key] if portal.result_evidence == "browser_verified" else [],
-        }
+        report = chinese_literature_portal_report([portal])
+    else:
+        report = chinese_literature_portal_report()
 
     if json_report:
         console.print_json(json.dumps(report, ensure_ascii=False))
@@ -1454,6 +1450,7 @@ def chinese_literature_sites(
     table.add_column("Site", overflow="fold")
     table.add_column("Capability", overflow="fold")
     table.add_column("Evidence", overflow="fold")
+    table.add_column("Download", overflow="fold")
     table.add_column("Navigation", overflow="fold")
     table.add_column("Next Action", overflow="fold")
     for portal in report["portals"]:
@@ -1461,6 +1458,7 @@ def chinese_literature_sites(
             str(portal["key"]),
             str(portal["capability"]),
             str(portal["result_evidence"]),
+            "yes" if portal.get("download_verified") else "no",
             str(portal["default_navigation_mode"]),
             str(portal["next_action"]),
         )
@@ -1480,6 +1478,7 @@ def cnki_login(
     profile is reused on later runs; cookies are never exported by this command.
     """
     from .cnki_session import open_cnki_login_session, write_cnki_session_report
+    from .profile_health import configured_session_domains
 
     _setup_logging(verbose)
     cfg = Config.load()
@@ -1492,12 +1491,17 @@ def cnki_login(
         context, page, run_dir = open_cnki_login_session(cfg, url=url, output_dir=run_dir)
         console.print("[yellow]Complete any CNKI CAPTCHA, institution check, or login in the visible browser.[/yellow]")
         typer.prompt("Press Enter here after the CNKI page is ready", default="", show_default=False)
-        report = write_cnki_session_report(page, run_dir, cfg.cnki_profile_dir)
+        auth_domains = configured_session_domains(cfg)
+        report = write_cnki_session_report(page, run_dir, cfg.cnki_profile_dir, auth_domains=auth_domains)
         status = str(report["session_status"])
-        if status == "session_ready":
-            console.print("[green]CNKI persistent session is ready.[/green]")
+        if status == "portal_ready":
+            console.print("[green]CNKI portal is reachable; PDF entitlement is not tested by login.[/green]")
+        elif status == "auth_required":
+            console.print("[yellow]CNKI needs institution login in the visible browser.[/yellow]")
         elif status == "human_verification_required":
             console.print("[yellow]CNKI still requires visible human verification.[/yellow]")
+        elif status == "access_unavailable":
+            console.print("[yellow]CNKI page indicates access is unavailable.[/yellow]")
         else:
             console.print("[yellow]CNKI browser ended on an unexpected page.[/yellow]")
         console.print(f"[dim]Report: {report['report']}[/dim]")
@@ -1510,12 +1514,15 @@ def cnki_login(
 def cnki_fetch(
     url: str = typer.Argument(help="CNKI article URL saved in Zotero or copied from the article page."),
     record_id: str = typer.Option("cnki_article", "--record-id", help="Stable local identifier used for the output PDF name."),
+    title: str = typer.Option("", "--title", help="Expected article title. Required to mark a captured PDF as verified success unless record_id is found in the PDF text."),
     output: str = typer.Option("", "--output", "-o", help="Private run directory for PDF and browser evidence."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
 ):
     """Download one CNKI PDF through the persistent visible browser session."""
     from .cnki_session import (
         capture_cnki_pdf,
+        CNKI_HOST_SUFFIXES,
+        cnki_url_is_allowed,
         classify_cnki_session,
         cnki_verification_visible,
         navigate_cnki_article,
@@ -1523,15 +1530,24 @@ def cnki_fetch(
         safe_page_url,
         settle_cnki_after_manual_step,
     )
+    from .chinese_literature import chinese_literature_session_domains
+    from .extractors import pdf_extractor
+    from .profile_health import configured_session_domains
 
     _setup_logging(verbose)
     cfg = Config.load()
     cfg.ensure_dirs()
+    other_portal_domains = set(chinese_literature_session_domains()) - set(CNKI_HOST_SUFFIXES)
+    auth_domains = tuple(domain for domain in configured_session_domains(cfg) if domain not in other_portal_domains)
+    if not cnki_url_is_allowed(url, extra_domains=auth_domains):
+        console.print("[red]Refusing to open a non-CNKI URL in the persistent CNKI browser profile.[/red]")
+        raise typer.Exit(2)
     run_dir = Path(output) if output else Path(cfg.output_dir).parent / "runs" / f"{datetime.now():%Y%m%d_%H%M%S}_cnki_fetch"
     context = None
     report: dict[str, object] = {
         "publisher": "CNKI",
         "record_id": record_id,
+        "title": title,
         "route_attempted": "persistent_cloakbrowser_pdf_button",
         "institution": _configured_subscription_institution(cfg),
         "file_status": "missing",
@@ -1541,36 +1557,86 @@ def cnki_fetch(
     }
     try:
         context, page, run_dir = open_cnki_login_session(cfg, url="https://www.cnki.net/", output_dir=run_dir)
-        navigation = navigate_cnki_article(page, url)
+        navigation = navigate_cnki_article(page, url, auth_domains=auth_domains)
         report["navigation"] = navigation
-        if cnki_verification_visible(page):
+        session_status = str(navigation.get("session_status") or classify_cnki_session(str(getattr(page, "url", "") or ""), "", auth_domains=auth_domains))
+        if session_status == "auth_required":
+            evidence = run_dir / "auth_required.png"
+            page.screenshot(path=str(evidence), full_page=False)
+            report.update(
+                {
+                    "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                    "standard_status": "auth_required",
+                    "evidence": str(evidence),
+                    "next_action": "complete_institution_login_in_visible_browser_then_retry",
+                }
+            )
+        elif session_status == "access_unavailable":
+            evidence = run_dir / "access_unavailable.png"
+            page.screenshot(path=str(evidence), full_page=False)
+            report.update(
+                {
+                    "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                    "standard_status": "access_unavailable",
+                    "evidence": str(evidence),
+                    "next_action": "confirm_institution_entitlement_or_try_library_route",
+                }
+            )
+        elif cnki_verification_visible(page):
             console.print("[yellow]Complete the visible CNKI verification; InstSci will handle the PDF click.[/yellow]")
             typer.prompt("Press Enter here after verification", default="", show_default=False)
-            settle = settle_cnki_after_manual_step(page, resume_url=url)
+            settle = settle_cnki_after_manual_step(page, resume_url=url, auth_domains=auth_domains)
             report["manual_verification_settle"] = settle
-        before = run_dir / "before_pdf_click.png"
-        page.screenshot(path=str(before), full_page=False)
-        result = capture_cnki_pdf(page, output_path=run_dir / "pdfs" / f"{record_id}.pdf")
-        if result.get("verification_required"):
-            console.print("[yellow]CNKI requested another verification before download. Complete it in the browser.[/yellow]")
-            typer.prompt("Press Enter here after verification", default="", show_default=False)
-            settle = settle_cnki_after_manual_step(page, resume_url=url)
-            report["download_verification_settle"] = settle
-            if not settle.get("verification_required"):
-                result = capture_cnki_pdf(page, output_path=run_dir / "pdfs" / f"{record_id}.pdf")
-        after = run_dir / "after_pdf_click.png"
-        page.screenshot(path=str(after), full_page=False)
-        valid = bool(result.get("pdf_header_valid")) and int(result.get("size_bytes") or 0) > 10_000
-        report.update(result)
-        report.update(
-            {
-                "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
-                "file_status": "success" if valid else "missing",
-                "standard_status": "success" if valid else ("human_verification_required" if result.get("verification_required") else "capture_failed"),
-                "evidence": str(after),
-                "next_action": "verify_pdf_text" if valid else "inspect_visible_cnki_page",
-            }
-        )
+        if report["standard_status"] == "capture_failed":
+            before = run_dir / "before_pdf_click.png"
+            page.screenshot(path=str(before), full_page=False)
+            result = capture_cnki_pdf(page, output_path=run_dir / "pdfs" / f"{record_id}.pdf")
+            if result.get("verification_required"):
+                console.print("[yellow]CNKI requested another verification before download. Complete it in the browser.[/yellow]")
+                typer.prompt("Press Enter here after verification", default="", show_default=False)
+                settle = settle_cnki_after_manual_step(page, resume_url=url, auth_domains=auth_domains)
+                report["download_verification_settle"] = settle
+                if not settle.get("verification_required"):
+                    result = capture_cnki_pdf(page, output_path=run_dir / "pdfs" / f"{record_id}.pdf")
+            after = run_dir / "after_pdf_click.png"
+            page.screenshot(path=str(after), full_page=False)
+            pdf_path = Path(str(result.get("pdf_path") or ""))
+            valid_pdf = bool(result.get("pdf_header_valid")) and int(result.get("size_bytes") or 0) > 10_000
+            text = pdf_extractor.extract_text(pdf_path) if valid_pdf and pdf_path.exists() else ""
+            compact_text = "".join(text.split()).lower()
+            title_match = bool(title.strip()) and "".join(title.split()).lower() in compact_text
+            record_id_match = bool(record_id.strip() and record_id != "cnki_article") and record_id.lower() in text.lower()
+            verified = valid_pdf and (title_match or record_id_match)
+            report.update(result)
+            report.update(
+                {
+                    "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                    "title_match": title_match,
+                    "record_id_match": record_id_match,
+                    "text_length": len(text),
+                    "verified_match": verified,
+                    "file_status": "success" if verified else ("unverified" if valid_pdf else "missing"),
+                    "standard_status": (
+                        "success"
+                        if verified
+                        else (
+                            "pdf_candidate_conflict"
+                            if valid_pdf
+                            else ("human_verification_required" if result.get("verification_required") else "capture_failed")
+                        )
+                    ),
+                    "evidence": str(after),
+                    "next_action": (
+                        "none"
+                        if verified
+                        else (
+                            "complete_visible_human_verification_then_retry"
+                            if result.get("verification_required")
+                            else ("inspect_downloaded_pdf" if valid_pdf else "inspect_visible_cnki_page")
+                        )
+                    ),
+                }
+            )
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -1594,7 +1660,7 @@ def cnki_fetch(
 
 @app.command("cnki-batch")
 def cnki_batch(
-    file: Path = typer.Argument(help="JSON array of CNKI records: record_id, title, url, and optional zotero_item_key."),
+    file: Path = typer.Argument(help="JSON array of CNKI records: record_id, title, optional url, and optional zotero_item_key."),
     output: str = typer.Option("", "--output", "-o", help="Private run directory for PDFs, screenshots, and manifests."),
     delay: float = typer.Option(30.0, "--delay", min=2.0, help="Seconds between article downloads."),
     verification_policy: str = typer.Option("stop", "--verification-policy", help="Human-verification policy: stop or prompt."),
@@ -1605,6 +1671,7 @@ def cnki_batch(
     """Download a small CNKI batch in one persistent visible browser session."""
     from .cnki_session import (
         capture_cnki_pdf,
+        CNKI_HOST_SUFFIXES,
         cnki_pdf_button_visible,
         classify_cnki_session,
         cnki_verification_visible,
@@ -1615,17 +1682,11 @@ def cnki_batch(
         safe_page_url,
         settle_cnki_after_manual_step,
     )
+    from .chinese_literature import chinese_literature_session_domains
     from .extractors import pdf_extractor
+    from .profile_health import configured_session_domains
 
     _setup_logging(verbose)
-    try:
-        records = load_cnki_batch(file)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        console.print(f"[red]Invalid CNKI batch input: {exc}[/red]")
-        raise typer.Exit(2)
-    if not records:
-        console.print("[yellow]CNKI batch is empty.[/yellow]")
-        return
     verification_policy = verification_policy.strip().lower()
     if verification_policy not in {"stop", "prompt"}:
         console.print("[red]--verification-policy must be 'stop' or 'prompt'.[/red]")
@@ -1634,9 +1695,19 @@ def cnki_batch(
     if navigation_mode not in {"search", "direct"}:
         console.print("[red]--navigation-mode must be 'search' or 'direct'.[/red]")
         raise typer.Exit(2)
+    try:
+        records = load_cnki_batch(file, require_url=navigation_mode == "direct")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Invalid CNKI batch input: {exc}[/red]")
+        raise typer.Exit(2)
+    if not records:
+        console.print("[yellow]CNKI batch is empty.[/yellow]")
+        return
 
     cfg = Config.load()
     cfg.ensure_dirs()
+    other_portal_domains = set(chinese_literature_session_domains()) - set(CNKI_HOST_SUFFIXES)
+    auth_domains = tuple(domain for domain in configured_session_domains(cfg) if domain not in other_portal_domains)
     run_dir = Path(output) if output else Path(cfg.output_dir).parent / "runs" / f"{datetime.now():%Y%m%d_%H%M%S}_cnki_batch"
     pdf_dir = run_dir / "pdfs"
     evidence_dir = run_dir / "evidence"
@@ -1713,14 +1784,37 @@ def cnki_batch(
                         title=title,
                         fallback_url=record["url"],
                         record_id=record_id,
+                        auth_domains=auth_domains,
                     )
                 else:
-                    navigation = navigate_cnki_article(page, record["url"])
+                    navigation = navigate_cnki_article(page, record["url"], auth_domains=auth_domains)
                 row["navigation"] = navigation
+                session_status = str(
+                    navigation.get("session_status")
+                    or classify_cnki_session(str(getattr(page, "url", "") or ""), "", auth_domains=auth_domains)
+                )
+                if session_status in {"auth_required", "access_unavailable"}:
+                    failure = item_evidence / f"{session_status}.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row.update(
+                        {
+                            "standard_status": session_status,
+                            "next_action": (
+                                "complete_institution_login_in_visible_browser_then_retry"
+                                if session_status == "auth_required"
+                                else "confirm_institution_entitlement_or_try_library_route"
+                            ),
+                            "evidence": str(failure),
+                            "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    break
                 if (
-                    navigation.get("session_status") == "human_verification_required"
+                    session_status == "human_verification_required"
                     or navigation.get("verification_required")
-                    or classify_cnki_session(str(getattr(page, "url", "") or ""), "") == "human_verification_required"
+                    or classify_cnki_session(str(getattr(page, "url", "") or ""), "", auth_domains=auth_domains) == "human_verification_required"
                 ):
                     if verification_policy == "stop":
                         row.update(
@@ -1735,6 +1829,7 @@ def cnki_batch(
                         settle = settle_cnki_after_manual_step(
                             page,
                             resume_url=record["url"] if navigation_mode == "direct" else "",
+                            auth_domains=auth_domains,
                         )
                         row["manual_verification_settle"] = settle
                         if (
@@ -1748,6 +1843,7 @@ def cnki_batch(
                                 title=title,
                                 fallback_url=record["url"],
                                 record_id=record_id,
+                                auth_domains=auth_domains,
                             )
                             row["post_verification_navigation"] = renavigation
                         if settle.get("verification_required"):
@@ -1774,6 +1870,7 @@ def cnki_batch(
                         settle = settle_cnki_after_manual_step(
                             page,
                             resume_url=record["url"] if navigation_mode == "direct" else "",
+                            auth_domains=auth_domains,
                         )
                         row["download_verification_settle"] = settle
                         if (
@@ -1787,6 +1884,7 @@ def cnki_batch(
                                 title=title,
                                 fallback_url=record["url"],
                                 record_id=record_id,
+                                auth_domains=auth_domains,
                             )
                             row["download_post_verification_navigation"] = renavigation
                         if not settle.get("verification_required"):
@@ -1860,7 +1958,7 @@ def wanfang_batch(
     output: str = typer.Option("", "--output", "-o", help="Private run directory for PDFs, screenshots, and manifests."),
     delay: float = typer.Option(10.0, "--delay", min=2.0, help="Seconds between article downloads."),
     verification_policy: str = typer.Option("stop", "--verification-policy", help="Human-verification policy: stop or prompt."),
-    profile_dir: str = typer.Option("", "--profile-dir", help="Persistent visible browser profile. Defaults to config chrome_profile_dir."),
+    profile_dir: str = typer.Option("", "--profile-dir", help="Persistent visible browser profile. Defaults to config wanfang_profile_dir."),
     skip_completed: bool = typer.Option(True, "--skip-completed/--no-skip-completed", help="When --output has a prior manifest, keep successful rows and skip them."),
     strict_title_match: bool = typer.Option(True, "--strict-title-match/--no-strict-title-match", help="Require filename or extracted text to match the requested title."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
@@ -1873,8 +1971,11 @@ def wanfang_batch(
         navigate_wanfang_search,
         open_wanfang_session,
         safe_wanfang_url,
+        WANFANG_HOST_SUFFIXES,
         wanfang_verification_visible,
     )
+    from .chinese_literature import chinese_literature_session_domains
+    from .profile_health import configured_session_domains
 
     _setup_logging(verbose)
     try:
@@ -1892,6 +1993,8 @@ def wanfang_batch(
 
     cfg = Config.load()
     cfg.ensure_dirs()
+    other_portal_domains = set(chinese_literature_session_domains()) - set(WANFANG_HOST_SUFFIXES)
+    auth_domains = tuple(domain for domain in configured_session_domains(cfg) if domain not in other_portal_domains)
     run_dir = Path(output) if output else Path(cfg.output_dir).parent / "runs" / f"{datetime.now():%Y%m%d_%H%M%S}_wanfang_batch"
     pdf_dir = run_dir / "pdfs"
     evidence_dir = run_dir / "evidence"
@@ -1977,14 +2080,31 @@ def wanfang_batch(
             }
             console.print(f"[bold][{index}/{len(records)}][/bold] {title}")
             try:
-                navigation = navigate_wanfang_search(page, query=record["query"], title=title)
+                navigation = navigate_wanfang_search(page, query=record["query"], title=title, auth_domains=auth_domains)
                 row["navigation"] = navigation
                 row["before_screenshots"] = screenshot_pages(item_evidence, "before_download")
+                session_status = str(navigation.get("session_status") or "")
+                if session_status in {"auth_required", "access_unavailable"}:
+                    row.update(
+                        {
+                            "standard_status": session_status,
+                            "next_action": (
+                                "complete_institution_login_in_visible_browser_then_retry"
+                                if session_status == "auth_required"
+                                else "confirm_institution_entitlement_or_try_library_route"
+                            ),
+                            "evidence": (row.get("before_screenshots") or [""])[0],
+                            "article_url": safe_wanfang_url(str(getattr(page, "url", "") or "")),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    break
                 if navigation.get("verification_required") or navigation.get("session_status") == "human_verification_required":
                     if verification_policy == "prompt":
                         console.print("[yellow]Complete the visible Wanfang verification; InstSci will retry this record.[/yellow]")
                         typer.prompt("Press Enter here after verification", default="", show_default=False)
-                        navigation = navigate_wanfang_search(page, query=record["query"], title=title)
+                        navigation = navigate_wanfang_search(page, query=record["query"], title=title, auth_domains=auth_domains)
                         row["post_verification_navigation"] = navigation
                     if navigation.get("verification_required") or navigation.get("session_status") == "human_verification_required":
                         row.update(
@@ -3647,9 +3767,11 @@ def search(
 
     for source_name, status in search_response.source_status.items():
         if status.get("status") != "success":
+            detail = status.get("detail")
+            detail_text = f" ({detail})" if detail else ""
             console.print(
                 f"[yellow]{source_name}: {status.get('status')}"
-                f"{f' ({status.get('detail')})' if status.get('detail') else ''}[/yellow]"
+                f"{detail_text}[/yellow]"
             )
 
     if not results:

@@ -55,7 +55,7 @@ def search(
         params["filter"] = filter_value
     if email:
         params["mailto"] = email
-    headers = {"User-Agent": f"instsci/0.2.0a1{f' (mailto:{email})' if email else ''}"}
+    headers = {"User-Agent": f"instsci/0.2.0a2{f' (mailto:{email})' if email else ''}"}
     try:
         response = request_with_retry("GET", CROSSREF_WORKS_API, params=params, headers=headers, timeout=30)
         response.raise_for_status()

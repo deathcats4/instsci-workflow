@@ -1,4 +1,7 @@
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 CI.
+    import tomli as tomllib
 import unittest
 from pathlib import Path
 import subprocess
@@ -107,6 +110,13 @@ class PublicLanguageTests(unittest.TestCase):
         self.assertIn("browser_verified_manual_broker_waf_blocked", output)
         self.assertIn("download_verified_portals", output)
 
+    def test_chinese_literature_sites_site_filter_does_not_crash(self):
+        result = self.runner.invoke(app, ["chinese-literature-sites", "--site", "cnki"])
+        output = unstyle(result.output)
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("download-verified: cnki", output)
+        self.assertIn("route-verified: cnki", output)
     def test_wanfang_batch_help_describes_search_download_popup_flow(self):
         result = self.runner.invoke(app, ["wanfang-batch", "--help"])
         output = unstyle(result.output)

@@ -168,6 +168,67 @@ class ZoteroMcpHandoffTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["metadata_imports"], 1)
             self.assertEqual(payload["actions"][0]["source"]["pdf_path"], "paper.pdf")
 
+    def test_build_handoff_uses_attachment_only_for_no_doi_existing_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "cnki.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            manifest = Path(tmp) / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    [
+                        {
+                            "title": "中文文献",
+                            "publisher": "CNKI",
+                            "file_status": "success",
+                            "standard_status": "success",
+                            "result_evidence": "browser_verified",
+                            "pdf_path": "cnki.pdf",
+                            "zotero_item_key": "JGN5J75A",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            payload = build_zotero_mcp_handoff(manifest, attach_mode="required")
+
+            self.assertEqual(payload["summary"]["metadata_imports"], 0)
+            self.assertEqual(payload["summary"]["attachment_only"], 1)
+            self.assertEqual(payload["actions"][0]["kind"], "attachment_only")
+            self.assertEqual(payload["actions"][0]["zotero_item_key"], "JGN5J75A")
+            self.assertEqual(payload["actions"][0]["source"]["pdf_path"], "cnki.pdf")
+
+    def test_execute_sync_attachment_only_uses_existing_zotero_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "cnki.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n")
+            manifest = Path(tmp) / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    [
+                        {
+                            "title": "中文文献",
+                            "publisher": "CNKI",
+                            "file_status": "success",
+                            "standard_status": "success",
+                            "result_evidence": "browser_verified",
+                            "pdf_path": "cnki.pdf",
+                            "zotero_item_key": "JGN5J75A",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            backend = FakeZoteroBackend()
+
+            report = execute_zotero_sync(manifest, backend=backend, attach_mode="required")
+
+            self.assertEqual(report["summary"]["success"], 1)
+            self.assertEqual(backend.add_calls, [])
+            self.assertEqual(backend.attach_calls[0]["item_key"], "JGN5J75A")
+            updated = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(updated[0]["zotero_item_key"], "JGN5J75A")
+            self.assertEqual(updated[0]["zotero_attachment_key"], "ATTACH01")
     def test_write_handoff_round_trips_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "handoff.json"

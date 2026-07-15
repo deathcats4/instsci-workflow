@@ -154,6 +154,21 @@ InstSci uses a three-layer result contract:
 
 The important rule: HTTP checks are preflight only. Final closed-access publisher conclusions should come from visible-browser evidence.
 
+## Chinese Literature
+
+Chinese literature portals are visible-browser workflows, not direct PDF URLs:
+
+```powershell
+instsci chinese-literature-sites
+instsci cnki-batch .\records_cnki.json --navigation-mode search --output .\runs\cnki
+instsci wanfang-batch .\records_wanfang.json --output .\runs\wanfang
+```
+
+For CNKI search mode, each record needs `record_id` and `title`; `url` is optional and used only as a fallback. Direct mode still requires a validated CNKI URL. Single-record CNKI downloads accept `--title`; InstSci marks `file_status=success` only when extracted PDF text matches the title or record id. A valid PDF that cannot be tied to the requested record is kept as `file_status=unverified` with `standard_status=pdf_candidate_conflict`.
+
+For Wanfang, records use `record_id`, `title`, and optional `query`/`url`; the batch route searches `s.wanfangdata.com.cn`, clicks the result-row download control, and captures the browser-generated `Fulltext/Download` PDF popup. CNKI and Wanfang classify visible SSO/CARSI/OpenAthens or configured institution pages as `auth_required`, so the user can complete login in the visible browser and retry the same run.
+
+Zotero sync also supports Chinese records without DOI: when a successful row has `zotero_item_key` and a PDF, `instsci zotero handoff` creates an `attachment_only` action and `instsci zotero sync` links the PDF to the existing Zotero item.
 ## Zotero
 
 The preferred Zotero flow is boring on purpose: item plus matching PDF attachment.
