@@ -116,6 +116,28 @@ class WanfangSessionTests(TestCase):
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen["row_title"], "纳米矿物在地球科学的研究进展")
 
+    def test_extract_wanfang_download_candidates_ignores_multi_result_right_list_container(self) -> None:
+        html = """
+        <section class="right-list">
+          <div class="normal-list periodical-list">
+            <a class="title" title="纳米矿物在地球科学的研究进展">纳米矿物在地球科学的研究进展</a>
+          </div>
+          <div class="normal-list periodical-list">
+            <a class="title" title="磁铁矿纳米矿物学研究进展">磁铁矿纳米矿物学研究进展</a>
+            <div class="wf-list-button">下载</div>
+          </div>
+        </section>
+        """
+
+        candidates = extract_wanfang_download_candidates_from_html(
+            html,
+            title="纳米矿物在地球科学的研究进展",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertFalse(candidates[0]["row_title_match"])
+        self.assertIsNone(choose_wanfang_download_candidate(candidates, title="纳米矿物在地球科学的研究进展"))
+
     def test_click_wanfang_result_download_rejects_changed_candidate_before_click(self) -> None:
         class DriftPage:
             def __init__(self) -> None:
