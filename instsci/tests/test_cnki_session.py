@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from instsci.cnki_session import (
     classify_cnki_session,
     cnki_search_url,
+    cnki_url_is_allowed,
     cnki_verification_visible,
     load_cnki_batch,
     safe_page_url,
@@ -30,7 +31,7 @@ class CnkiSessionTests(TestCase):
     def test_cnki_page_is_session_ready(self) -> None:
         self.assertEqual(
             classify_cnki_session("https://kns.cnki.net/kcms2/article/abstract?v=token", "文章详情"),
-            "session_ready",
+            "portal_ready",
         )
 
     def test_cnki_search_url_sets_keyword_and_preserves_params(self) -> None:
@@ -78,6 +79,33 @@ class CnkiSessionTests(TestCase):
             self.assertEqual(rows[0]["record_id"], "YKDZ202305004")
             self.assertEqual(rows[0]["zotero_item_key"], "JGN5J75A")
 
+    def test_load_cnki_batch_search_mode_allows_missing_url(self) -> None:
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / "batch.json"
+            source.write_text(
+                '[{"record_id":"YKDZ202305004","title":"测试题名","zotero_item_key":"JGN5J75A"}]',
+                encoding="utf-8",
+            )
+            rows = load_cnki_batch(source)
+            self.assertEqual(rows[0]["url"], "")
+
+    def test_load_cnki_batch_direct_mode_requires_url(self) -> None:
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / "batch.json"
+            source.write_text('[{"record_id":"YKDZ202305004","title":"测试题名"}]', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid CNKI URL"):
+                load_cnki_batch(source, require_url=True)
+
+    def test_cnki_classifier_recognizes_auth_required(self) -> None:
+        self.assertEqual(
+            classify_cnki_session("https://idp.example.edu/login", "统一身份认证", auth_domains=("idp.example.edu",)),
+            "auth_required",
+        )
+
+    def test_cnki_url_guard_rejects_unrelated_urls(self) -> None:
+        self.assertTrue(cnki_url_is_allowed("https://kns.cnki.net/kcms2/article/abstract"))
+        self.assertTrue(cnki_url_is_allowed("https://idp.example.edu/login", extra_domains=("idp.example.edu",)))
+        self.assertFalse(cnki_url_is_allowed("https://example.org/article"))
     def test_load_cnki_batch_rejects_unsafe_record_id(self) -> None:
         with TemporaryDirectory() as tmp:
             source = Path(tmp) / "batch.json"

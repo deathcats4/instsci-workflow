@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from .chinese_literature import get_chinese_literature_portal
+from .chinese_literature import classify_chinese_literature_page, get_chinese_literature_portal
 from .cloakbrowser_compat import prepare_cloakbrowser_runtime
 from .config import Config
 
@@ -30,7 +30,22 @@ CNKI_TITLE_VERIFICATION_MARKERS = (
 )
 
 
-def load_cnki_batch(path: str | Path) -> list[dict[str, str]]:
+def _host_matches(host: str, suffixes: tuple[str, ...]) -> bool:
+    hostname = host.lower().lstrip(".")
+    return any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def cnki_url_is_allowed(url: str, *, extra_domains: tuple[str, ...] = ()) -> bool:
+    """Return whether a user-provided URL is safe for the CNKI browser profile."""
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if not parsed.scheme or not host:
+        return False
+    allowed = tuple(dict.fromkeys((*CNKI_HOST_SUFFIXES, *extra_domains)))
+    return _host_matches(host, allowed)
+
+
+def load_cnki_batch(path: str | Path, *, require_url: bool = False) -> list[dict[str, str]]:
     """Load and validate a JSON array of CNKI article records."""
     source = Path(path)
     payload = json.loads(source.read_text(encoding="utf-8-sig"))
@@ -43,8 +58,9 @@ def load_cnki_batch(path: str | Path) -> list[dict[str, str]]:
         url = str(raw.get("url") or "").strip()
         record_id = str(raw.get("record_id") or "").strip()
         title = str(raw.get("title") or "").strip()
-        host = (urlparse(url).hostname or "").lower()
-        if not url or not any(host == suffix or host.endswith(f".{suffix}") for suffix in CNKI_HOST_SUFFIXES):
+        if url and not cnki_url_is_allowed(url):
+            raise ValueError(f"CNKI batch row {index} has an invalid CNKI URL.")
+        if require_url and not url:
             raise ValueError(f"CNKI batch row {index} has an invalid CNKI URL.")
         if not record_id or not re.fullmatch(r"[A-Za-z0-9._-]+", record_id):
             raise ValueError(f"CNKI batch row {index} has an unsafe record_id.")
@@ -81,23 +97,11 @@ def _compact_text(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
 
 
-def classify_cnki_session(url: str, title: str = "") -> str:
+def classify_cnki_session(url: str, title: str = "", *, auth_domains: tuple[str, ...] = ()) -> str:
     """Classify visible CNKI state without treating it as a PDF verdict."""
-    parsed = urlparse(str(url or ""))
-    host = (parsed.hostname or "").lower()
-    path = parsed.path.lower()
-    query = parsed.query.lower()
-    title_text = str(title or "")
-    if (
-        "/verify/" in path
-        or "captcha" in path
-        or "captchatype=" in query
-        or any(marker in title_text for marker in CNKI_TITLE_VERIFICATION_MARKERS)
-    ):
+    if any(marker in str(title or "") for marker in CNKI_TITLE_VERIFICATION_MARKERS):
         return "human_verification_required"
-    if any(host == suffix or host.endswith(f".{suffix}") for suffix in CNKI_HOST_SUFFIXES):
-        return "session_ready"
-    return "unexpected_page"
+    return classify_chinese_literature_page(url, portal=CNKI_PORTAL, title=title, auth_domains=auth_domains)
 
 
 def _page_title(page: Any) -> str:
@@ -251,6 +255,7 @@ def navigate_cnki_article_via_search(
     search_entry_url: str = CNKI_SEARCH_URL,
     timeout_ms: int = 60_000,
     settle_seconds: float = 2.0,
+    auth_domains: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Reach a CNKI article through search results before falling back to a detail URL."""
     detail: dict[str, object] = {
@@ -298,7 +303,13 @@ def navigate_cnki_article_via_search(
     if not result_click.get("clicked"):
         detail["fallback_used"] = bool(fallback_url)
         if fallback_url:
-            fallback = navigate_cnki_article(page, fallback_url, timeout_ms=timeout_ms, settle_seconds=settle_seconds)
+            fallback = navigate_cnki_article(
+                page,
+                fallback_url,
+                timeout_ms=timeout_ms,
+                settle_seconds=settle_seconds,
+                auth_domains=auth_domains,
+            )
             fallback["navigation_method"] = "direct_detail_fallback"
             detail["fallback_navigation"] = fallback
             detail.update(
@@ -319,7 +330,7 @@ def navigate_cnki_article_via_search(
             break
         if cnki_pdf_button_visible(page):
             detail["ready"] = True
-            detail["session_status"] = "session_ready"
+            detail["session_status"] = "portal_ready"
             break
         time.sleep(1)
 
@@ -331,7 +342,7 @@ def navigate_cnki_article_via_search(
         time.sleep(settle_seconds)
 
     current_url = str(getattr(page, "url", "") or "")
-    detail.setdefault("session_status", classify_cnki_session(current_url, _page_title(page)))
+    detail.setdefault("session_status", classify_cnki_session(current_url, _page_title(page), auth_domains=auth_domains))
     detail["page_url"] = safe_page_url(current_url)
     detail["pdf_button_visible"] = cnki_pdf_button_visible(page)
     detail["verification_required"] = cnki_verification_visible(page)
@@ -340,7 +351,7 @@ def navigate_cnki_article_via_search(
         detail["session_status"] = "human_verification_required"
     elif detail["pdf_button_visible"]:
         detail["ready"] = True
-        detail["session_status"] = "session_ready"
+        detail["session_status"] = "portal_ready"
     return detail
 
 
@@ -350,6 +361,7 @@ def navigate_cnki_article(
     *,
     timeout_ms: int = 45_000,
     settle_seconds: float = 2.0,
+    auth_domains: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Navigate to a CNKI article without waiting indefinitely for page load events.
 
@@ -368,14 +380,14 @@ def navigate_cnki_article(
     deadline = time.monotonic() + (timeout_ms / 1000)
     while time.monotonic() < deadline:
         current_url = str(getattr(page, "url", "") or "")
-        status = classify_cnki_session(current_url, "")
-        if status == "human_verification_required":
+        status = classify_cnki_session(current_url, "", auth_domains=auth_domains)
+        if status in {"auth_required", "access_unavailable", "human_verification_required"}:
             detail["ready"] = True
             detail["session_status"] = status
             break
         if cnki_pdf_button_visible(page):
             detail["ready"] = True
-            detail["session_status"] = "session_ready"
+            detail["session_status"] = "portal_ready"
             break
         if safe_page_url(current_url) == requested_safe:
             try:
@@ -384,7 +396,7 @@ def navigate_cnki_article(
                 pass
             if cnki_pdf_button_visible(page):
                 detail["ready"] = True
-                detail["session_status"] = "session_ready"
+                detail["session_status"] = "portal_ready"
                 break
         time.sleep(1)
 
@@ -396,7 +408,7 @@ def navigate_cnki_article(
         time.sleep(settle_seconds)
 
     current_url = str(getattr(page, "url", "") or "")
-    detail.setdefault("session_status", classify_cnki_session(current_url, _page_title(page)))
+    detail.setdefault("session_status", classify_cnki_session(current_url, _page_title(page), auth_domains=auth_domains))
     detail["page_url"] = safe_page_url(current_url)
     detail["pdf_button_visible"] = cnki_pdf_button_visible(page)
     detail["verification_required"] = cnki_verification_visible(page)
@@ -405,7 +417,7 @@ def navigate_cnki_article(
         detail["session_status"] = "human_verification_required"
     elif detail["pdf_button_visible"]:
         detail["ready"] = True
-        detail["session_status"] = "session_ready"
+        detail["session_status"] = "portal_ready"
     return detail
 
 
@@ -414,6 +426,7 @@ def settle_cnki_after_manual_step(
     *,
     resume_url: str = "",
     timeout_ms: int = 30_000,
+    auth_domains: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Let a user-completed visible step settle, then optionally return to the article.
 
@@ -430,11 +443,11 @@ def settle_cnki_after_manual_step(
         current_safe = safe_page_url(str(getattr(page, "url", "") or ""))
         resume_safe = safe_page_url(resume_url)
         if current_safe != resume_safe:
-            return navigate_cnki_article(page, resume_url, timeout_ms=timeout_ms)
+            return navigate_cnki_article(page, resume_url, timeout_ms=timeout_ms, auth_domains=auth_domains)
     title = _page_title(page)
     current_url = str(getattr(page, "url", "") or "")
     return {
-        "session_status": classify_cnki_session(current_url, title),
+        "session_status": classify_cnki_session(current_url, title, auth_domains=auth_domains),
         "verification_required": cnki_verification_visible(page),
         "page_url": safe_page_url(current_url),
         "page_title": title,
@@ -523,7 +536,13 @@ def open_cnki_login_session(
     return context, page, run_dir
 
 
-def write_cnki_session_report(page: Any, run_dir: Path, profile_dir: str | Path) -> dict[str, object]:
+def write_cnki_session_report(
+    page: Any,
+    run_dir: Path,
+    profile_dir: str | Path,
+    *,
+    auth_domains: tuple[str, ...] = (),
+) -> dict[str, object]:
     """Save screenshot-backed session state without cookies or URL tokens."""
     screenshot = run_dir / "cnki_session.png"
     page.screenshot(path=str(screenshot), full_page=False)
@@ -532,7 +551,7 @@ def write_cnki_session_report(page: Any, run_dir: Path, profile_dir: str | Path)
     report: dict[str, object] = {
         "schema": "instsci.cnki_session.v1",
         "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "session_status": classify_cnki_session(current_url, title),
+        "session_status": classify_cnki_session(current_url, title, auth_domains=auth_domains),
         "page_url": safe_page_url(current_url),
         "page_title": title,
         "profile_dir": str(Path(profile_dir)),

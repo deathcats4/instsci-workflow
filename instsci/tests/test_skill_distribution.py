@@ -88,9 +88,9 @@ class SkillDistributionTests(unittest.TestCase):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-        self.assertIn('version = "0.2.0a1"', pyproject)
+        self.assertIn('version = "0.2.0a2"', pyproject)
         self.assertIn(
-            '__version__ = "0.2.0a1"',
+            '__version__ = "0.2.0a2"',
             (ROOT / "instsci" / "__init__.py").read_text(encoding="utf-8"),
         )
         self.assertIn('readme = "README.md"', pyproject)

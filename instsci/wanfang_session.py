@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from .chinese_literature import get_chinese_literature_portal
+from .chinese_literature import classify_chinese_literature_page, get_chinese_literature_portal
 from .cloakbrowser_compat import prepare_cloakbrowser_runtime
 from .config import Config
 
@@ -88,17 +88,9 @@ def wanfang_search_url(query: str, base_url: str = WANFANG_SEARCH_URL) -> str:
     return urlunparse(parsed._replace(query=urlencode(params)))
 
 
-def classify_wanfang_page(url: str, title: str = "") -> str:
+def classify_wanfang_page(url: str, title: str = "", *, auth_domains: tuple[str, ...] = ()) -> str:
     """Classify visible Wanfang state without treating it as final evidence."""
-    parsed = urlparse(str(url or ""))
-    host = (parsed.hostname or "").lower()
-    path = parsed.path.lower()
-    title_text = str(title or "")
-    if "captcha" in path or any(marker in title_text for marker in ("安全验证", "验证码", "人机验证")):
-        return "human_verification_required"
-    if _host_matches(host, WANFANG_HOST_SUFFIXES):
-        return "session_ready"
-    return "unexpected_page"
+    return classify_chinese_literature_page(url, portal=WANFANG_PORTAL, title=title, auth_domains=auth_domains)
 
 
 def _page_title(page: Any) -> str:
@@ -156,6 +148,7 @@ def navigate_wanfang_search(
     title: str = "",
     timeout_ms: int = 45_000,
     settle_seconds: float = 2.0,
+    auth_domains: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Navigate to Wanfang search results for a title/query."""
     search_url = wanfang_search_url(query)
@@ -178,13 +171,13 @@ def navigate_wanfang_search(
             break
         if wanfang_search_results_visible(page, title=title):
             detail["ready"] = True
-            detail["session_status"] = "session_ready"
+            detail["session_status"] = "portal_ready"
             break
         time.sleep(1)
     if settle_seconds > 0:
         time.sleep(settle_seconds)
     current_url = str(getattr(page, "url", "") or "")
-    detail.setdefault("session_status", classify_wanfang_page(current_url, _page_title(page)))
+    detail.setdefault("session_status", classify_wanfang_page(current_url, _page_title(page), auth_domains=auth_domains))
     detail["page_url"] = safe_wanfang_url(current_url)
     detail["verification_required"] = wanfang_verification_visible(page)
     detail["download_control_visible"] = wanfang_search_results_visible(page, title=title)
@@ -386,7 +379,7 @@ def open_wanfang_session(
     prepare_cloakbrowser_runtime()
     from cloakbrowser import launch_persistent_context
 
-    profile = Path(profile_dir or config.chrome_profile_dir).expanduser()
+    profile = Path(profile_dir or config.wanfang_profile_dir).expanduser()
     profile.mkdir(parents=True, exist_ok=True)
     run_dir = Path(output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)

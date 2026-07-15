@@ -59,13 +59,19 @@ instsci chinese-literature-sites
   literature portals. `download_verified_portals` should be `["cnki", "wanfang"]`.
 - CNKI is the primary Chinese full-text route: use the persistent CNKI profile
   and the search-first batch path (`instsci cnki-batch ... --navigation-mode search`).
+  In search mode, records need `record_id` and `title`; `url` is optional and
+  used only as a fallback. Direct mode still requires a validated CNKI URL.
   Prefer homepage/search-result navigation before saved detail URLs because
   direct article/download URLs are more likely to trigger click-word verification.
+  Single-record `cnki-fetch` needs `--title` or a text-visible record id before
+  a captured PDF can be marked `file_status=success`; otherwise keep it
+  `unverified/pdf_candidate_conflict`.
 - Wanfang is a browser-verified search-download route: start at
   `s.wanfangdata.com.cn`, click the result-row `下载` control, and capture the
   PDF from the `Fulltext/Download` popup. Keep this flow in the same visible
-  browser context because the popup URL is generated per session. For batches,
-  use `instsci wanfang-batch records.json --output .\runs\wanfang`.
+  browser context because the popup URL is generated per session. Wanfang uses
+  its own persistent profile by default. For batches, use
+  `instsci wanfang-batch records.json --output .\runs\wanfang`.
 - CQVIP is a manual broker only, not download-verified. The visible route can
   reach a `www.cqvip.com` article page and `PDF下载`; manual `IP登录` can redirect
   to `qikan.cqvip.com`, but qikan rendered blank in CloakBrowser and HTTP
@@ -80,8 +86,13 @@ instsci chinese-literature-sites
   every Chinese literature portal. Avoid parallel tabs until a portal is
   browser-verified and rate behavior is known.
 - If CAPTCHA, SSO, reader checks, delivery flows, or other human verification
-  appear, let the user complete them in the visible browser. Do not auto-solve,
-  bypass, export cookies, or treat HTTP-only probes as final download evidence.
+  appear, let the user complete them in the visible browser. CNKI/Wanfang page
+  classifiers should distinguish `auth_required` from human verification and
+  `capture_failed`. Do not auto-solve, bypass, export cookies, or treat
+  HTTP-only probes as final download evidence.
+- For Chinese records without DOI, Zotero handoff should use
+  `attachment_only` when `zotero_item_key` and a verified PDF are present;
+  do not skip them as `missing_doi`.
 
 ## Elsevier API Setup
 
@@ -203,4 +214,3 @@ For recent gotchas, publisher-specific notes, visible-browser UI fallback steps,
 - Visible UI fallback may click public publisher controls such as `Access through your organization`, institution search results, or PDF viewer `Download`, but never fill passwords, OTPs, or account credentials.
 - Do not manually call private or local notification scripts.
 - Never write notification endpoints, tokens, institution credentials, cookies, or other secrets into docs, code, logs, skills, or commits.
-

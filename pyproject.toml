@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "instsci"
-version = "0.2.0a1"
+version = "0.2.0a2"
 description = "Academic paper fetcher with institutional access support"
 readme = "README.md"
 license = "MIT"

@@ -68,8 +68,10 @@ def candidate_profile_dirs(config: Config, *, workspace: Path | None = None) -> 
     candidates = [
         Path(config.chrome_profile_dir) if config.chrome_profile_dir else None,
         Path(config.cnki_profile_dir) if config.cnki_profile_dir else None,
+        Path(config.wanfang_profile_dir) if config.wanfang_profile_dir else None,
         DEFAULT_BASE_DIR / "chrome-profile",
         DEFAULT_BASE_DIR / "cnki-profile",
+        DEFAULT_BASE_DIR / "wanfang-profile",
     ]
     if workspace is not None:
         candidates.append(workspace / ".chrome-sciencedirect")

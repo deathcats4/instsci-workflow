@@ -57,6 +57,13 @@ class ChineseLiteraturePortalTests(unittest.TestCase):
         self.assertEqual(cqvip.capability, "browser_verified_manual_broker_waf_blocked")
         self.assertEqual(wanfang.result_evidence, "browser_verified")
         self.assertEqual(cqvip.result_evidence, "browser_verified")
+        self.assertTrue(wanfang.route_verified)
+        self.assertTrue(wanfang.download_verified)
+        self.assertTrue(wanfang.default_batch_enabled)
+        self.assertTrue(cqvip.route_verified)
+        self.assertFalse(cqvip.download_verified)
+        self.assertFalse(cqvip.default_batch_enabled)
+        self.assertEqual(cqvip.verification_scope, "article_page_and_pdf_control_only")
         self.assertEqual(wanfang.default_navigation_mode, "search")
         self.assertEqual(cqvip.default_navigation_mode, "search")
         self.assertIn("wanfang", wanfang.next_action)
@@ -74,6 +81,13 @@ class ChineseLiteraturePortalTests(unittest.TestCase):
         self.assertEqual(report["summary"]["capability_counts"]["browser_verified_search_first"], 1)
         self.assertEqual(report["summary"]["capability_counts"]["browser_verified_manual_broker_waf_blocked"], 1)
 
+    def test_filtered_report_keeps_complete_summary(self):
+        report = chinese_literature_portal_report([get_chinese_literature_portal("cnki")])
+
+        self.assertEqual(report["summary"]["portals"], 1)
+        self.assertEqual(report["summary"]["download_verified_portals"], ["cnki"])
+        self.assertEqual(report["summary"]["route_verified_portals"], ["cnki"])
+        self.assertEqual(report["summary"]["default_batch_portals"], ["cnki"])
     def test_session_domains_cover_chinese_literature_portals(self):
         domains = chinese_literature_session_domains()
 

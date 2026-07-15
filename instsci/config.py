@@ -26,6 +26,7 @@ class Config:
     cookie_path: str = ""
     chrome_profile_dir: str = ""
     cnki_profile_dir: str = ""  # Dedicated persistent CNKI browser profile
+    wanfang_profile_dir: str = ""  # Dedicated persistent Wanfang browser profile
     private_evidence_dir: str = ""  # External index for private browser evidence references
     carsi_enabled: bool = False  # Enable CARSI/Shibboleth federated auth
     carsi_idp_name: str = ""  # University name for CARSI WAYF (e.g. "Example University")
@@ -49,6 +50,8 @@ class Config:
             self.chrome_profile_dir = str(base / "chrome-profile")
         if not self.cnki_profile_dir:
             self.cnki_profile_dir = str(base / "cnki-profile")
+        if not self.wanfang_profile_dir:
+            self.wanfang_profile_dir = str(base / "wanfang-profile")
         if not self.private_evidence_dir:
             self.private_evidence_dir = str(base / "private-evidence")
         if not self.carsi_cookie_dir:
@@ -72,6 +75,7 @@ class Config:
             self.cache_dir,
             self.chrome_profile_dir,
             self.cnki_profile_dir,
+            self.wanfang_profile_dir,
             self.carsi_cookie_dir,
         ]:
             Path(d).mkdir(parents=True, exist_ok=True)

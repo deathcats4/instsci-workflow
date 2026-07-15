@@ -147,14 +147,15 @@ def build_zotero_mcp_handoff(
     for index, row in enumerate(rows, 1):
         doi = str(row.get("doi") or "").strip()
         url = doi_to_url(doi)
+        zotero_item_key = str(row.get("zotero_item_key") or "").strip()
         status = _row_status(row)
         file_status = _row_file_status(row)
         pdf_path = _row_pdf_path(row)
-        if not doi:
-            skipped.append({"index": index, "reason": "missing_doi", "row": row})
-            continue
         if not include_missing and (file_status != "success" or status not in wanted_statuses):
             skipped.append({"index": index, "doi": doi, "reason": "status_not_selected", "status": status, "file_status": file_status})
+            continue
+        if not doi and not zotero_item_key:
+            skipped.append({"index": index, "reason": "missing_identifier", "row": row})
             continue
         if normalized_attach_mode == "required" and not _has_existing_pdf(pdf_path, manifest_path):
             skipped.append({"index": index, "doi": doi, "reason": "required_pdf_missing", "status": status, "file_status": file_status, "pdf_path": pdf_path})
@@ -166,23 +167,42 @@ def build_zotero_mcp_handoff(
         }
         if collection_values:
             add_params["collections"] = collection_values
-        actions.append(
-            {
-                "index": index,
-                "doi": doi,
-                "title": row.get("title") or "",
-                "kind": "metadata_import",
-                "tool": "zotero_add_by_url",
-                "params": add_params,
-                "source": {
-                    "manifest": str(manifest_path),
-                    "pdf_path": pdf_path,
-                    "standard_status": status,
-                    "file_status": file_status,
-                    "result_evidence": row.get("result_evidence") or "",
-                },
-            }
-        )
+        source = {
+            "manifest": str(manifest_path),
+            "pdf_path": pdf_path,
+            "standard_status": status,
+            "file_status": file_status,
+            "result_evidence": row.get("result_evidence") or "",
+        }
+        if doi:
+            actions.append(
+                {
+                    "index": index,
+                    "doi": doi,
+                    "title": row.get("title") or "",
+                    "kind": "metadata_import",
+                    "tool": "zotero_add_by_url",
+                    "params": add_params,
+                    "source": source,
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "index": index,
+                    "doi": "",
+                    "zotero_item_key": zotero_item_key,
+                    "title": row.get("title") or "",
+                    "kind": "attachment_only",
+                    "tool": "zotero_attach_linked_file",
+                    "params": {
+                        "zotero_item_key": zotero_item_key,
+                        "tags": _row_tags(row, extra_tags),
+                        "attach_mode": normalized_attach_mode,
+                    },
+                    "source": source,
+                }
+            )
     return {
         "schema": "instsci.zotero_mcp_handoff.v1",
         "manifest": str(manifest_path),
@@ -194,6 +214,7 @@ def build_zotero_mcp_handoff(
             "rows": len(rows),
             "actions": len(actions),
             "metadata_imports": sum(1 for action in actions if action["kind"] == "metadata_import"),
+            "attachment_only": sum(1 for action in actions if action["kind"] == "attachment_only"),
             "skipped": len(skipped),
         },
     }
