@@ -3767,9 +3767,11 @@ def search(
 
     for source_name, status in search_response.source_status.items():
         if status.get("status") != "success":
+            detail = status.get("detail")
+            detail_text = f" ({detail})" if detail else ""
             console.print(
                 f"[yellow]{source_name}: {status.get('status')}"
-                f"{f' ({status.get('detail')})' if status.get('detail') else ''}[/yellow]"
+                f"{detail_text}[/yellow]"
             )
 
     if not results:

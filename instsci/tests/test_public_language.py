@@ -1,4 +1,7 @@
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 CI.
+    import tomli as tomllib
 import unittest
 from pathlib import Path
 import subprocess
