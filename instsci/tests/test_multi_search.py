@@ -105,6 +105,7 @@ class MultiSearchTests(TestCase):
                 {"provider": "semantic_scholar", "channel": "semantic_scholar_keyword", "query_variant": "q_keyword_1", "weight": 1.0},
                 {"provider": "crossref", "channel": "crossref_exact_title", "query_variant": "q_exact_title_1", "weight": 1.4},
                 {"provider": "crossref", "channel": "crossref_keyword", "query_variant": "q_keyword_1", "weight": 0.55},
+                {"provider": "instsci", "channel": "legacy_fallback", "query_variant": "q_legacy_fallback_1", "weight": 1.05},
             ],
         )
         self.assertEqual(
@@ -134,6 +135,63 @@ class MultiSearchTests(TestCase):
 
         self.assertEqual([result.doi for result in response.results], ["10.1000/keyword"])
         self.assertEqual(response.source_status["openalex_semantic:q_semantic_1"]["status"], "authentication_required")
+
+    def test_hybrid_uses_legacy_fallback_channel_for_recall(self) -> None:
+        keyword = SearchResult(title="Keyword", year=2024, doi="10.1000/keyword")
+        fallback = multi_search.MergedSearchResult(title="Legacy only", year=2023, doi="10.1000/fallback")
+        with (
+            patch("instsci.multi_search.openalex.search", return_value=[keyword]),
+            patch("instsci.multi_search.openalex.search_semantic", return_value=[]),
+            patch(
+                "instsci.multi_search._legacy_search_with_status",
+                return_value=multi_search.MultiSearchResponse(results=[fallback]),
+            ),
+        ):
+            response = multi_search.search_with_status("topic", limit=10, sources="openalex", strategy="hybrid")
+
+        self.assertIn("legacy_fallback:q_legacy_fallback_1", response.source_status)
+        self.assertIn(
+            {"id": "q_legacy_fallback_1", "type": "keyword", "text": "topic", "generated_by": "legacy_fallback"},
+            response.query_plan["variants"],
+        )
+        self.assertIn(
+            {
+                "provider": "instsci",
+                "channel": "legacy_fallback",
+                "query_variant": "q_legacy_fallback_1",
+                "weight": multi_search.CHANNEL_WEIGHTS["legacy_fallback"],
+            },
+            response.query_plan["channels"],
+        )
+        self.assertIn("10.1000/fallback", [result.doi for result in response.results])
+        fallback_result = next(result for result in response.results if result.doi == "10.1000/fallback")
+        self.assertEqual(fallback_result.retrieval_provenance[-1]["channel"], "legacy_fallback")
+        self.assertEqual(fallback_result.sources[-1], "instsci")
+
+    def test_hybrid_recall_floor_keeps_legacy_top_n_candidates(self) -> None:
+        hybrid_only = multi_search.MergedSearchResult(
+            title="Hybrid only",
+            doi="10.1000/hybrid",
+            fusion_score=1.0,
+            retrieval_provenance=[{"channel": "openalex_keyword"}],
+        )
+        legacy_first = multi_search.MergedSearchResult(
+            title="Legacy first",
+            doi="10.1000/legacy-first",
+            fusion_score=0.1,
+            retrieval_provenance=[{"channel": "legacy_fallback"}],
+        )
+        legacy_second = multi_search.MergedSearchResult(
+            title="Legacy second",
+            doi="10.1000/legacy-second",
+            fusion_score=0.05,
+            retrieval_provenance=[{"channel": "legacy_fallback"}],
+        )
+        ranked = [hybrid_only, legacy_first, legacy_second]
+
+        floored = multi_search._apply_legacy_recall_floor(ranked, [legacy_first, legacy_second], limit=2)
+
+        self.assertEqual([result.doi for result in floored[:2]], ["10.1000/legacy-first", "10.1000/legacy-second"])
 
     def test_hybrid_keeps_same_channel_distinct_query_variants(self) -> None:
         first = multi_search.RetrievalChannel(

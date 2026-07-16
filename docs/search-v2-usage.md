@@ -19,7 +19,10 @@ python -m instsci.cli search `
 ```
 
 Hybrid output records the query plan, channel-level provider status, retrieval
-provenance, version placeholder fields, and weighted RRF ranking evidence.
+provenance, version placeholder fields, and weighted RRF ranking evidence. The
+hybrid plan also includes an `instsci` `legacy_fallback` channel. This channel
+keeps the legacy top-N candidate set available as a recall floor while hybrid
+channels rerank candidates with RRF evidence.
 
 If OpenAlex semantic search reports `authentication_required`, set
 `OPENALEX_API_KEY` or continue with partial results. The status is diagnostic;

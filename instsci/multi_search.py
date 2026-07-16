@@ -22,6 +22,7 @@ CHANNEL_WEIGHTS = {
     "crossref_exact_title": 1.40,
     "crossref_identifier_resolution": 1.40,
     "crossref_keyword": 0.55,
+    "legacy_fallback": 1.05,
 }
 
 
@@ -422,6 +423,11 @@ def _hybrid_search_with_status(
 
     merged = _merge_ranked_channel_results(channel_results, channels)
     merged.sort(key=_hybrid_sort_key)
+    merged = _apply_legacy_recall_floor(
+        merged,
+        channel_results.get("legacy_fallback:q_legacy_fallback_1", []),
+        limit=limit,
+    )
     return MultiSearchResponse(
         results=merged[: max(limit, 0)],
         source_status=source_status,
@@ -509,6 +515,22 @@ def _build_channels(
                 ),
             )
         )
+    if channels:
+        channels.append(
+            RetrievalChannel(
+                key="legacy_fallback",
+                provider="instsci",
+                query_variant="q_legacy_fallback_1",
+                weight=CHANNEL_WEIGHTS["legacy_fallback"],
+                search=lambda: _legacy_search_with_status(
+                    query,
+                    limit=limit,
+                    year_range=year_range,
+                    sources=",".join(sources),
+                    email=email,
+                ).results,
+            )
+        )
     return channels
 
 
@@ -545,7 +567,7 @@ def _merge_ranked_channel_results(
             if target is None:
                 target = incoming
                 merged.append(target)
-            else:
+            elif channel.key != "legacy_fallback":
                 _merge(target, incoming)
             _register_aliases(target, doi_aliases, title_aliases, family_aliases)
     return merged
@@ -559,6 +581,68 @@ def _hybrid_sort_key(result: MergedSearchResult) -> tuple[float, int, int, str, 
         result.doi or result.arxiv_id or result.paper_id,
         result.title.lower(),
     )
+
+
+def _result_match_keys(result: object) -> set[str]:
+    doi = normalize_doi(str(getattr(result, "doi", "") or ""))
+    arxiv_id = str(getattr(result, "arxiv_id", "") or "").strip().lower()
+    paper_id = str(getattr(result, "paper_id", "") or "").strip().lower()
+    title = str(getattr(result, "title", "") or "")
+    year = getattr(result, "year", None)
+    keys: set[str] = set()
+    if doi:
+        keys.add(f"doi:{doi}")
+    if arxiv_id:
+        keys.add(f"arxiv:{arxiv_id}")
+    if paper_id:
+        keys.add(f"paper:{paper_id}")
+    title_key = _title_key(title, year if isinstance(year, int) else None)
+    if title_key:
+        keys.add(title_key)
+    return keys
+
+
+def _apply_legacy_recall_floor(
+    ranked: list[MergedSearchResult],
+    legacy_fallback_results: list[object],
+    *,
+    limit: int,
+) -> list[MergedSearchResult]:
+    """Keep legacy top-N membership while preserving hybrid order inside that set."""
+    max_results = max(limit, 0)
+    if max_results == 0 or not legacy_fallback_results:
+        return ranked
+
+    fallback_keys: set[str] = set()
+    for result in legacy_fallback_results[:max_results]:
+        fallback_keys.update(_result_match_keys(result))
+    if not fallback_keys:
+        return ranked
+
+    required: list[MergedSearchResult] = []
+    for result in ranked:
+        if _result_match_keys(result) & fallback_keys:
+            required.append(result)
+
+    selected = list(ranked[:max_results])
+    selected_ids = {id(result) for result in selected}
+    required_ids = {id(result) for result in required}
+    for result in required:
+        if id(result) in selected_ids:
+            continue
+        replace_index = next(
+            (index for index in range(len(selected) - 1, -1, -1) if id(selected[index]) not in required_ids),
+            None,
+        )
+        if replace_index is None:
+            break
+        selected_ids.remove(id(selected[replace_index]))
+        selected[replace_index] = result
+        selected_ids.add(id(result))
+
+    return [result for result in ranked if id(result) in selected_ids] + [
+        result for result in ranked if id(result) not in selected_ids
+    ]
 
 
 def build_query_plan(
@@ -581,6 +665,8 @@ def build_query_plan(
                 {"id": "q_identifier_1", "type": "identifier", "text": identifier_doi, "generated_by": "deterministic"}
             )
         variants.append({"id": "q_exact_title_1", "type": "exact_title", "text": query, "generated_by": "deterministic"})
+    if strategy == "hybrid" and channels and any(channel.key == "legacy_fallback" for channel in channels):
+        variants.append({"id": "q_legacy_fallback_1", "type": "keyword", "text": query, "generated_by": "legacy_fallback"})
     channel_plan = [
         {
             "provider": channel.provider,
