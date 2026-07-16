@@ -360,10 +360,13 @@ class SearchLiveEvaluationTests(TestCase):
                     ],
                 )
             manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+            review_packet = json.loads((output_dir / "judgments_review_packet.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("judgments_review_packet.json", result.output)
+        self.assertIn("Review packet:", result.output)
         self.assertEqual(manifest["schema"], "instsci.search_live_evaluation.v1")
+        self.assertEqual(manifest["review_packet"], str(output_dir / "judgments_review_packet.json"))
+        self.assertEqual(review_packet["schema"], "instsci.relevance_review_packet.v1")
         self.assertEqual(manifest["query_set_validation"], str(output_dir / "query_set_validation.json"))
         self.assertTrue(manifest["query_set_validation_valid"])
         self.assertGreaterEqual(manifest["query_set_validation_warning_count"], 1)

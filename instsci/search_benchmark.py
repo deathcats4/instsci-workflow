@@ -357,9 +357,9 @@ def _coerce_relevance_grade(value: Any, item_id: str) -> int:
     try:
         grade = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Relevance grade for {item_id or ""} must be an integer from 0-3.") from exc
+        raise ValueError(f"Relevance grade for {item_id or ''} must be an integer from 0-3.") from exc
     if grade < 0 or grade > 3:
-        raise ValueError(f"Relevance grade for {item_id or ""} must be an integer from 0-3.")
+        raise ValueError(f"Relevance grade for {item_id or ''} must be an integer from 0-3.")
     return grade
 
 
