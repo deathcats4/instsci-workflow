@@ -280,6 +280,7 @@ def search_with_status(
     sources: str | None = None,
     email: str = "",
     strategy: str = DEFAULT_STRATEGY,
+    legacy_fallback_results: list[object] | None = None,
 ) -> MultiSearchResponse:
     strategy_value = (strategy or DEFAULT_STRATEGY).strip().lower().replace("-", "_")
     if strategy_value not in {"legacy", "hybrid"}:
@@ -291,6 +292,7 @@ def search_with_status(
             year_range=year_range,
             sources=sources,
             email=email,
+            legacy_fallback_results=legacy_fallback_results,
         )
     return _legacy_search_with_status(query, limit=limit, year_range=year_range, sources=sources, email=email)
 
@@ -368,9 +370,17 @@ def _hybrid_search_with_status(
     *,
     sources: str | None = None,
     email: str = "",
+    legacy_fallback_results: list[object] | None = None,
 ) -> MultiSearchResponse:
     selected_sources = parse_sources(sources)
-    channels = _build_channels(query, limit=limit, year_range=year_range, sources=selected_sources, email=email)
+    channels = _build_channels(
+        query,
+        limit=limit,
+        year_range=year_range,
+        sources=selected_sources,
+        email=email,
+        legacy_fallback_results=legacy_fallback_results,
+    )
     channel_results: dict[str, list[object]] = {_status_key(channel): [] for channel in channels}
     source_status: dict[str, dict[str, object]] = {
         _status_key(channel): {
@@ -442,6 +452,7 @@ def _build_channels(
     year_range: str | None,
     sources: list[str],
     email: str,
+    legacy_fallback_results: list[object] | None = None,
 ) -> list[RetrievalChannel]:
     channels: list[RetrievalChannel] = []
     if "openalex" in sources:
@@ -516,19 +527,24 @@ def _build_channels(
             )
         )
     if channels:
+        fallback_results = list(legacy_fallback_results) if legacy_fallback_results is not None else None
         channels.append(
             RetrievalChannel(
                 key="legacy_fallback",
                 provider="instsci",
                 query_variant="q_legacy_fallback_1",
                 weight=CHANNEL_WEIGHTS["legacy_fallback"],
-                search=lambda: _legacy_search_with_status(
-                    query,
-                    limit=limit,
-                    year_range=year_range,
-                    sources=",".join(sources),
-                    email=email,
-                ).results,
+                search=(
+                    (lambda results=fallback_results: results)
+                    if fallback_results is not None
+                    else lambda: _legacy_search_with_status(
+                        query,
+                        limit=limit,
+                        year_range=year_range,
+                        sources=",".join(sources),
+                        email=email,
+                    ).results
+                ),
             )
         )
     return channels

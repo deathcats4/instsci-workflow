@@ -168,6 +168,27 @@ class MultiSearchTests(TestCase):
         self.assertEqual(fallback_result.retrieval_provenance[-1]["channel"], "legacy_fallback")
         self.assertEqual(fallback_result.sources[-1], "instsci")
 
+    def test_hybrid_can_use_external_legacy_fallback_results(self) -> None:
+        keyword = SearchResult(title="Keyword", year=2024, doi="10.1000/keyword")
+        fallback = multi_search.MergedSearchResult(title="External legacy", year=2023, doi="10.1000/external")
+        with (
+            patch("instsci.multi_search.openalex.search", return_value=[keyword]),
+            patch("instsci.multi_search.openalex.search_semantic", return_value=[]),
+            patch("instsci.multi_search._legacy_search_with_status") as internal_legacy,
+        ):
+            response = multi_search.search_with_status(
+                "topic",
+                limit=10,
+                sources="openalex",
+                strategy="hybrid",
+                legacy_fallback_results=[fallback],
+            )
+
+        internal_legacy.assert_not_called()
+        self.assertIn("legacy_fallback:q_legacy_fallback_1", response.source_status)
+        self.assertEqual(response.source_status["legacy_fallback:q_legacy_fallback_1"]["status"], "success")
+        self.assertIn("10.1000/external", [result.doi for result in response.results])
+
     def test_hybrid_recall_floor_keeps_legacy_top_n_candidates(self) -> None:
         hybrid_only = multi_search.MergedSearchResult(
             title="Hybrid only",

@@ -3905,6 +3905,32 @@ def search_validate(
     if not report.get("valid"):
         raise typer.Exit(2)
 
+
+@app.command("openalex-rate-limit")
+def openalex_rate_limit(
+    output: Path = typer.Option(
+        Path("openalex_rate_limit.json"),
+        "--output",
+        "-o",
+        help="Redacted OpenAlex API quota/rate-limit preflight report.",
+    ),
+):
+    """Write a redacted OpenAlex quota/rate-limit report without exposing the API key."""
+    from .sources import openalex
+
+    try:
+        config = Config.load()
+        report = openalex.get_rate_limit_status(email=config.email)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Could not inspect OpenAlex rate limit: {exc}[/red]")
+        raise typer.Exit(2)
+
+    color = "green" if report.get("status") == "success" else "yellow"
+    console.print(f"[{color}]OpenAlex rate limit:[/{color}] {report.get('status')} -> {output}")
+
+
 @app.command("search-live-eval")
 def search_live_eval(
     query_file: Path = typer.Argument(help="JSON or text query set for live legacy vs hybrid evaluation."),

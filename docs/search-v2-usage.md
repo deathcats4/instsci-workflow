@@ -28,6 +28,27 @@ If OpenAlex semantic search reports `authentication_required`, set
 `OPENALEX_API_KEY` or continue with partial results. The status is diagnostic;
 it is not treated as silent zero-result success.
 
+## Configure OpenAlex Access
+
+Set the OpenAlex API key only in your local shell or user environment. Do not
+write it into search result JSON, docs, commits, or run notes.
+
+```powershell
+$env:OPENALEX_API_KEY = "<your OpenAlex API key>"
+```
+
+Check whether the key is being used and whether quota remains:
+
+```powershell
+python -m instsci.cli openalex-rate-limit `
+  --output openalex_rate_limit.json
+```
+
+The report is redacted. It records `api_key_configured`, quota/rate-limit
+headers or body fields, and a normalized status such as `success`,
+`rate_limited`, or `quota_exhausted`, but it does not include the key value.
+OpenAlex keyword and semantic channels both read the same `OPENALEX_API_KEY`.
+
 ## Select DOI Records
 
 Use `select` to turn reviewed search results into a DOI list for acquisition.
@@ -120,7 +141,11 @@ python -m instsci.cli search-gate-validate `
 The release gate cannot pass while judgments are ungraded. Passing requires
 hybrid recall to be no worse than legacy, at least half of evaluated queries to
 improve on `nDCG@20`, no severe unchecked ranking regression, and complete
-graded judgments.
+graded judgments. It also records `evaluation_validity.quality_valid=false`
+when required provider channels are unavailable because of authentication,
+quota, rate-limit, timeout, or network failures. In that case the run may still
+be structurally valid, but it is not valid evidence for hybrid retrieval
+quality.
 
 ## Current Rollout Rule
 

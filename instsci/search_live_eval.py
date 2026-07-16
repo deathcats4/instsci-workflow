@@ -226,6 +226,7 @@ def run_live_evaluation(
                 sources=sources,
                 email=email,
                 strategy="hybrid",
+                legacy_fallback_results=legacy_response.results,
             )
             legacy_payload = build_search_payload(
                 query,
@@ -897,13 +898,21 @@ def evaluate_live_evaluation_gate(manifest_path: str | Path) -> dict[str, Any]:
     report["manifest"] = str(manifest_file)
     report["data_issues"] = data_issues
     report["provider_failures"] = provider_status_summary["failures"]
+    quality_issues = _evaluation_quality_issues(provider_status_summary["failures"])
+    report["evaluation_validity"] = {
+        "quality_valid": not quality_issues,
+        "reasons": sorted({str(item.get("reason") or "") for item in quality_issues if item.get("reason")}),
+        "issues": quality_issues,
+    }
     report["checks"]["no_data_issues"] = not data_issues
     report["checks"]["all_judgments_graded"] = judgment_totals["ungraded_judgment_count"] == 0
+    report["checks"]["quality_evaluation_valid"] = not quality_issues
     report["summary"]["data_issue_count"] = len(data_issues)
     report["summary"].update(judgment_totals)
     report["summary"]["provider_status_count"] = provider_status_summary["count"]
     report["summary"]["provider_failure_count"] = provider_status_summary["failure_count"]
     report["summary"]["provider_failure_rate"] = provider_status_summary["failure_rate"]
+    report["summary"]["quality_issue_count"] = len(quality_issues)
     aggregate_blockers = [
         dict(item)
         for item in report.get("release_gate_blockers") or []
@@ -914,10 +923,11 @@ def evaluate_live_evaluation_gate(manifest_path: str | Path) -> dict[str, Any]:
         report.get("queries") or [],
         data_issues,
         provider_status_summary["failures"],
+        quality_issues,
     )
     report["release_gate_blockers"] = blockers
     report["summary"]["release_gate_blocker_count"] = len(blockers)
-    report["passed"] = bool(report.get("passed")) and not data_issues
+    report["passed"] = bool(report.get("passed")) and not data_issues and not quality_issues
     return report
 
 
@@ -1186,6 +1196,7 @@ def _build_release_gate_blockers(
     queries: Iterable[Any],
     data_issues: Iterable[Any],
     provider_failures: Iterable[Any],
+    quality_issues: Iterable[Any] | None = None,
 ) -> list[dict[str, Any]]:
     blockers: list[dict[str, Any]] = []
     for item in data_issues:
@@ -1227,7 +1238,56 @@ def _build_release_gate_blockers(
                 "blocks_gate": False,
             }
         )
+    for item in quality_issues or []:
+        if not isinstance(item, dict):
+            continue
+        blockers.append(
+            {
+                "type": "evaluation_quality_invalid",
+                "query_id": str(item.get("query_id") or ""),
+                "strategy": str(item.get("strategy") or ""),
+                "source": str(item.get("source") or ""),
+                "provider": str(item.get("provider") or ""),
+                "channel": str(item.get("channel") or ""),
+                "query_variant": str(item.get("query_variant") or ""),
+                "status": str(item.get("status") or ""),
+                "reason": str(item.get("reason") or ""),
+                "severity": "failure",
+                "blocks_gate": True,
+            }
+        )
     return blockers
+
+
+def _evaluation_quality_issues(provider_failures: Iterable[Any]) -> list[dict[str, Any]]:
+    quality_blocking_statuses = {
+        "authentication_required",
+        "quota_exhausted",
+        "rate_limited",
+        "timeout",
+        "network_error",
+        "service_unavailable",
+    }
+    issues: list[dict[str, Any]] = []
+    for item in provider_failures:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "")
+        if status not in quality_blocking_statuses:
+            continue
+        issues.append(
+            {
+                "reason": "provider_failures_present",
+                "query_id": str(item.get("query_id") or ""),
+                "strategy": str(item.get("strategy") or ""),
+                "source": str(item.get("source") or ""),
+                "provider": str(item.get("provider") or ""),
+                "channel": str(item.get("channel") or ""),
+                "query_variant": str(item.get("query_variant") or ""),
+                "status": status,
+            }
+        )
+    return issues
 
 
 def _format_markdown_value(value: Any) -> str:

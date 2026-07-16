@@ -114,7 +114,7 @@ class SearchLiveEvaluationTests(TestCase):
         self.assertIn("queries[1].id duplicates normalized id q1", payload["errors"])
 
     def test_run_live_evaluation_writes_manifest_results_and_pool(self) -> None:
-        def fake_runner(query, *, limit, year_range, sources, email, strategy):
+        def fake_runner(query, *, limit, year_range, sources, email, strategy, legacy_fallback_results=None):
             del limit, year_range, sources, email
             suffix = "legacy" if strategy == "legacy" else "hybrid"
             result = multi_search.MergedSearchResult(
@@ -166,8 +166,38 @@ class SearchLiveEvaluationTests(TestCase):
         self.assertEqual(manifest["queries"][0]["legacy_count"], 1)
         self.assertEqual(manifest["queries"][0]["hybrid_count"], 1)
 
+    def test_run_live_evaluation_passes_saved_legacy_results_to_hybrid_fallback(self) -> None:
+        legacy_result = multi_search.MergedSearchResult(title="Legacy only", doi="10.1000/legacy")
+        seen_fallback: list[list[multi_search.MergedSearchResult] | None] = []
+
+        def fake_runner(query, *, limit, year_range, sources, email, strategy, legacy_fallback_results=None):
+            del query, limit, year_range, sources, email
+            if strategy == "legacy":
+                return multi_search.MultiSearchResponse(
+                    results=[legacy_result],
+                    source_status={"openalex": {"status": "success", "count": 1}},
+                    query_plan={"schema": "instsci.query_plan.v1", "strategy": "legacy"},
+                )
+            seen_fallback.append(legacy_fallback_results)
+            return multi_search.MultiSearchResponse(
+                results=[multi_search.MergedSearchResult(title="Hybrid", doi="10.1000/hybrid")],
+                source_status={"openalex_keyword:q_keyword_1": {"status": "success", "count": 1}},
+                query_plan={"schema": "instsci.query_plan.v1", "strategy": "hybrid"},
+            )
+
+        with TemporaryDirectory() as tmp:
+            run_live_evaluation(
+                [{"id": "q1", "query": "topic", "year": ""}],
+                Path(tmp) / "live_eval",
+                search_runner=fake_runner,
+                limit=5,
+                sources="openalex",
+            )
+
+        self.assertEqual(seen_fallback, [[legacy_result]])
+
     def test_run_live_evaluation_records_search_contract_artifacts(self) -> None:
-        def fake_runner(query, *, limit, year_range, sources, email, strategy):
+        def fake_runner(query, *, limit, year_range, sources, email, strategy, legacy_fallback_results=None):
             del limit, year_range, sources, email
             if strategy == "hybrid":
                 result = multi_search.MergedSearchResult(
@@ -240,7 +270,7 @@ class SearchLiveEvaluationTests(TestCase):
     def test_run_live_evaluation_resume_reuses_successful_query_artifacts(self) -> None:
         calls: list[tuple[str, str]] = []
 
-        def fake_runner(query, *, limit, year_range, sources, email, strategy):
+        def fake_runner(query, *, limit, year_range, sources, email, strategy, legacy_fallback_results=None):
             del limit, year_range, sources, email
             calls.append((query, strategy))
             return multi_search.MultiSearchResponse(
@@ -305,7 +335,7 @@ class SearchLiveEvaluationTests(TestCase):
     def test_cli_search_live_eval_writes_manifest_without_acquisition(self) -> None:
         runner = CliRunner()
 
-        def fake_runner(query, *, limit, year_range, sources, email, strategy):
+        def fake_runner(query, *, limit, year_range, sources, email, strategy, legacy_fallback_results=None):
             del limit, year_range, sources, email
             return multi_search.MultiSearchResponse(
                 results=[multi_search.MergedSearchResult(title=query, doi=f"10.1000/{strategy}")],
@@ -903,6 +933,18 @@ class SearchLiveEvaluationTests(TestCase):
                 ("hybrid", "openalex_semantic:q_semantic_1", "authentication_required"),
             },
         )
+        self.assertFalse(report["evaluation_validity"]["quality_valid"])
+        self.assertIn("provider_failures_present", report["evaluation_validity"]["reasons"])
+        self.assertIn("quality_evaluation_valid", report["checks"])
+        self.assertFalse(report["checks"]["quality_evaluation_valid"])
+        self.assertTrue(
+            any(
+                item["type"] == "evaluation_quality_invalid"
+                and item["status"] == "rate_limited"
+                and item["blocks_gate"]
+                for item in report["release_gate_blockers"]
+            )
+        )
 
     def test_evaluate_live_evaluation_gate_builds_machine_readable_blockers(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -982,7 +1024,7 @@ class SearchLiveEvaluationTests(TestCase):
             report = evaluate_live_evaluation_gate(manifest_path)
 
         blockers = report["release_gate_blockers"]
-        self.assertEqual(report["summary"]["release_gate_blocker_count"], 4)
+        self.assertEqual(report["summary"]["release_gate_blocker_count"], 5)
         self.assertEqual(
             {(item["type"], item["query_id"]) for item in blockers},
             {
@@ -990,6 +1032,7 @@ class SearchLiveEvaluationTests(TestCase):
                 ("data_issue", "q1"),
                 ("manual_review_required", "q1"),
                 ("provider_failure", "q1"),
+                ("evaluation_quality_invalid", "q1"),
             },
         )
         improved_share = next(item for item in blockers if item["type"] == "ndcg_improved_share_below_threshold")
@@ -1006,6 +1049,10 @@ class SearchLiveEvaluationTests(TestCase):
         self.assertEqual(provider_failure["source"], "openalex_semantic:q_semantic_1")
         self.assertEqual(provider_failure["status"], "authentication_required")
         self.assertFalse(provider_failure["blocks_gate"])
+        quality_blocker = next(item for item in blockers if item["type"] == "evaluation_quality_invalid")
+        self.assertEqual(quality_blocker["source"], "openalex_semantic:q_semantic_1")
+        self.assertEqual(quality_blocker["status"], "authentication_required")
+        self.assertTrue(quality_blocker["blocks_gate"])
 
     def test_evaluate_live_evaluation_gate_preserves_recall_blockers(self) -> None:
         with TemporaryDirectory() as tmp:

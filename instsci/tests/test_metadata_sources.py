@@ -1,15 +1,27 @@
+import json
+import os
+import requests
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+from typer.testing import CliRunner
+
+from instsci.cli import app
 from instsci.sources import crossref, openalex
+from instsci.sources.errors import ProviderSearchError
 
 
 class FakeResponse:
-    def __init__(self, payload=None, text=""):
+    def __init__(self, payload=None, text="", status_code=200, headers=None):
         self.payload = payload
         self.text = text
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
         return None
 
     def json(self):
@@ -39,6 +51,87 @@ class MetadataSourceTests(TestCase):
         params = request.call_args.kwargs["params"]
         self.assertEqual(params["per-page"], 5)
         self.assertIn("from_publication_date:2020-01-01", params["filter"])
+
+    def test_openalex_keyword_uses_environment_api_key(self) -> None:
+        with patch.dict(os.environ, {"OPENALEX_API_KEY": "test-openalex-key"}), patch(
+            "instsci.sources.openalex.request_with_retry",
+            return_value=FakeResponse({"results": []}),
+        ) as request:
+            openalex.search("topic", limit=5)
+
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["api_key"], "test-openalex-key")
+
+    def test_openalex_semantic_uses_environment_api_key(self) -> None:
+        with patch.dict(os.environ, {"OPENALEX_API_KEY": "test-openalex-key"}), patch(
+            "instsci.sources.openalex.request_with_retry",
+            return_value=FakeResponse({"results": []}),
+        ) as request:
+            openalex.search_semantic("topic", limit=5, raise_on_error=True)
+
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["api_key"], "test-openalex-key")
+
+    def test_openalex_429_with_empty_remaining_quota_reports_quota_exhausted(self) -> None:
+        response = FakeResponse(
+            {"error": "daily limit exceeded"},
+            status_code=429,
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "3600"},
+        )
+        with patch("instsci.sources.openalex.request_with_retry", return_value=response):
+            with self.assertRaises(ProviderSearchError) as error:
+                openalex.search("topic", raise_on_error=True)
+
+        self.assertEqual(error.exception.status, "quota_exhausted")
+        self.assertIn("daily limit", error.exception.detail)
+
+    def test_openalex_rate_limit_status_redacts_api_key(self) -> None:
+        fake_key = "test-openalex-key"
+        with patch(
+            "instsci.sources.openalex.request_with_retry",
+            return_value=FakeResponse(
+                {"limit": 100000, "remaining": 99999},
+                headers={"X-RateLimit-Remaining": "99999"},
+            ),
+        ) as request:
+            report = openalex.get_rate_limit_status(api_key=fake_key)
+
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["api_key"], fake_key)
+        self.assertTrue(report["api_key_configured"])
+        self.assertNotIn(fake_key, json.dumps(report))
+
+    def test_openalex_rate_limit_status_reports_authentication_required(self) -> None:
+        response = FakeResponse(
+            {"error": "Authentication required"},
+            status_code=401,
+        )
+        with patch("instsci.sources.openalex.request_with_retry", return_value=response):
+            report = openalex.get_rate_limit_status()
+
+        self.assertEqual(report["status"], "authentication_required")
+        self.assertFalse(report["api_key_configured"])
+
+    def test_cli_openalex_rate_limit_writes_redacted_report(self) -> None:
+        runner = CliRunner()
+        with patch(
+            "instsci.sources.openalex.get_rate_limit_status",
+            return_value={
+                "provider": "openalex",
+                "status": "success",
+                "api_key_configured": True,
+                "body": {"remaining": 99999},
+            },
+        ):
+            with TemporaryDirectory() as tmp:
+                output = os.path.join(tmp, "openalex_rate_limit.json")
+                result = runner.invoke(app, ["openalex-rate-limit", "--output", output])
+                self.assertEqual(result.exit_code, 0)
+                with open(output, encoding="utf-8") as handle:
+                    payload = json.loads(handle.read())
+
+        self.assertTrue(payload["api_key_configured"])
+        self.assertNotIn("test-openalex-key", json.dumps(payload))
 
     def test_crossref_parses_metadata_and_polite_parameters(self) -> None:
         payload = {
