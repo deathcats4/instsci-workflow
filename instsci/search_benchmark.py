@@ -76,6 +76,7 @@ def build_relevance_pool(
         if str(label).lower().startswith("channel:"):
             _add_pool_records(pooled, records[: max(channel_top, 0)])
         _add_channel_pool_records(pooled, records, channel_top=max(channel_top, 0))
+        _add_raw_channel_result_pool_records(pooled, payload.get("channel_results"), channel_top=max(channel_top, 0))
 
     ordered = sorted(
         pooled.values(),
@@ -145,6 +146,23 @@ def _add_channel_pool_records(
             if isinstance(rank, int) and 1 <= rank <= channel_top:
                 _add_pool_records(pooled, [record])
                 break
+
+
+def _add_raw_channel_result_pool_records(
+    pooled: dict[str, dict[str, Any]],
+    channel_results: Any,
+    *,
+    channel_top: int,
+) -> None:
+    if channel_top <= 0 or not isinstance(channel_results, dict):
+        return
+    for records in channel_results.values():
+        if not isinstance(records, list):
+            continue
+        _add_pool_records(
+            pooled,
+            [record for record in records[:channel_top] if isinstance(record, dict)],
+        )
 
 
 def _pool_item(item_id: str, record: dict[str, Any]) -> dict[str, Any]:

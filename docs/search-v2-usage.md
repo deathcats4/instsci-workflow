@@ -19,10 +19,11 @@ python -m instsci.cli search `
 ```
 
 Hybrid output records the query plan, channel-level provider status, retrieval
-provenance, version placeholder fields, and weighted RRF ranking evidence. The
-hybrid plan also includes an `instsci` `legacy_fallback` channel. This channel
-keeps the legacy top-N candidate set available as a recall floor while hybrid
-channels rerank candidates with RRF evidence.
+provenance, version placeholder fields, weighted RRF ranking evidence, and raw
+per-channel candidate snapshots. The hybrid plan also includes an `instsci`
+`legacy_fallback` channel derived from already-fetched keyword channel results
+or from the saved live-eval legacy baseline. It protects a legacy safety band
+while leaving room for hybrid-only candidates in the final top-N.
 
 If OpenAlex semantic search reports `authentication_required`, set
 `OPENALEX_API_KEY` or continue with partial results. The status is diagnostic;
@@ -120,8 +121,9 @@ Before `hybrid` can become the default, grade each pooled judgment in
 0 = irrelevant
 ```
 
-The pool is built from legacy top results, hybrid top results, and channel-level
-candidates. This avoids judging hybrid only against papers legacy already found.
+The pool is built from legacy top results, hybrid top results, and raw
+channel-level candidates saved in `channel_results`. This avoids judging hybrid
+only against papers that survived final fusion.
 
 ## Run The Release Gate
 
@@ -146,6 +148,10 @@ when required provider channels are unavailable because of authentication,
 quota, rate-limit, timeout, or network failures. In that case the run may still
 be structurally valid, but it is not valid evidence for hybrid retrieval
 quality.
+
+When retrieval or pooling logic changes, rebuild the live-eval run and re-grade
+any new pooled candidates before treating an older release-gate result as
+current evidence.
 
 ## Current Rollout Rule
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from ..http_utils import request_with_retry
@@ -105,21 +106,34 @@ def _rate_limit_headers(headers: Any) -> dict[str, str]:
 
 def _redact_rate_limit_body(payload: dict[str, Any]) -> dict[str, Any]:
     blocked = {"api_key", "apikey", "key", "token"}
-    return {str(key): value for key, value in payload.items() if str(key).lower() not in blocked}
+    redacted: dict[str, Any] = {}
+    for key, value in payload.items():
+        key_text = str(key)
+        if key_text.lower() in blocked:
+            continue
+        if isinstance(value, dict):
+            redacted[key_text] = _redact_rate_limit_body(value)
+        else:
+            redacted[key_text] = value
+    return redacted
 
 
-def _remaining_from_report(report: dict[str, Any]) -> int | None:
+def _remaining_from_report(report: dict[str, Any]) -> float | None:
     headers = report.get("headers") if isinstance(report.get("headers"), dict) else {}
     body = report.get("body") if isinstance(report.get("body"), dict) else {}
+    rate_limit = body.get("rate_limit") if isinstance(body.get("rate_limit"), dict) else {}
     candidates = [
         headers.get("X-RateLimit-Remaining"),
         headers.get("x-ratelimit-remaining"),
         body.get("remaining"),
         body.get("requests_remaining"),
+        rate_limit.get("credits_remaining"),
+        rate_limit.get("daily_remaining_usd"),
+        rate_limit.get("prepaid_remaining_usd"),
     ]
     for value in candidates:
         try:
-            return int(value)
+            return float(value)
         except (TypeError, ValueError):
             continue
     return None
@@ -128,10 +142,10 @@ def _remaining_from_report(report: dict[str, Any]) -> int | None:
 def _classify_openalex_exception(exc: BaseException) -> str:
     response = getattr(exc, "response", None)
     status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code in {403, 429} and _openalex_quota_exhausted(response, exc):
+        return "quota_exhausted"
     if status_code in {401, 403}:
         return "authentication_required"
-    if status_code == 429 and _openalex_quota_exhausted(response, exc):
-        return "quota_exhausted"
     return classify_provider_exception(exc)
 
 
@@ -154,7 +168,7 @@ def _openalex_quota_exhausted(response: Any, exc: BaseException) -> bool:
 def _openalex_error_detail(exc: BaseException) -> str:
     response = getattr(exc, "response", None)
     if response is None:
-        return str(exc)
+        return _redact_sensitive(str(exc))
     try:
         payload = response.json()
     except ValueError:
@@ -162,9 +176,15 @@ def _openalex_error_detail(exc: BaseException) -> str:
     if isinstance(payload, dict):
         for key in ("error", "message", "detail"):
             if payload.get(key):
-                return str(payload[key])
+                return _redact_sensitive(str(payload[key]))
     text = str(getattr(response, "text", "") or "").strip()
-    return text or str(exc)
+    return _redact_sensitive(text or str(exc))
+
+
+def _redact_sensitive(value: str) -> str:
+    if not value:
+        return ""
+    return re.sub(r"(?i)(api_?key|apikey|key|token)=([^&\s]+)", r"\1=<redacted>", value)
 
 
 def search(
@@ -191,7 +211,7 @@ def search(
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("OpenAlex search failed: %s", exc)
+        logger.warning("OpenAlex search failed: %s", _openalex_error_detail(exc))
         if raise_on_error:
             raise ProviderSearchError("openalex", _classify_openalex_exception(exc), _openalex_error_detail(exc)) from exc
         return []
@@ -235,7 +255,7 @@ def search_semantic(
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("OpenAlex semantic search failed: %s", exc)
+        logger.warning("OpenAlex semantic search failed: %s", _openalex_error_detail(exc))
         if raise_on_error:
             raise ProviderSearchError("openalex", _classify_openalex_exception(exc), _openalex_error_detail(exc)) from exc
         return []

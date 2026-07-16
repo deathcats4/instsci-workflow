@@ -3809,6 +3809,7 @@ def search(
                 source="multi_source",
                 source_status=search_response.source_status,
                 query_plan=query_plan if plan_strategy != "legacy" else None,
+                channel_results=search_response.channel_results if plan_strategy != "legacy" else None,
             )
             output_path = write_search_payload(payload, output)
         except (OSError, ValueError) as exc:

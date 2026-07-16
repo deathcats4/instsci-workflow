@@ -138,17 +138,15 @@ class MultiSearchTests(TestCase):
 
     def test_hybrid_uses_legacy_fallback_channel_for_recall(self) -> None:
         keyword = SearchResult(title="Keyword", year=2024, doi="10.1000/keyword")
-        fallback = multi_search.MergedSearchResult(title="Legacy only", year=2023, doi="10.1000/fallback")
+        fallback = SearchResult(title="Legacy only", year=2023, doi="10.1000/fallback")
         with (
-            patch("instsci.multi_search.openalex.search", return_value=[keyword]),
+            patch("instsci.multi_search.openalex.search", return_value=[keyword, fallback]),
             patch("instsci.multi_search.openalex.search_semantic", return_value=[]),
-            patch(
-                "instsci.multi_search._legacy_search_with_status",
-                return_value=multi_search.MultiSearchResponse(results=[fallback]),
-            ),
+            patch("instsci.multi_search._legacy_search_with_status") as internal_legacy,
         ):
             response = multi_search.search_with_status("topic", limit=10, sources="openalex", strategy="hybrid")
 
+        internal_legacy.assert_not_called()
         self.assertIn("legacy_fallback:q_legacy_fallback_1", response.source_status)
         self.assertIn(
             {"id": "q_legacy_fallback_1", "type": "keyword", "text": "topic", "generated_by": "legacy_fallback"},
@@ -164,9 +162,7 @@ class MultiSearchTests(TestCase):
             response.query_plan["channels"],
         )
         self.assertIn("10.1000/fallback", [result.doi for result in response.results])
-        fallback_result = next(result for result in response.results if result.doi == "10.1000/fallback")
-        self.assertEqual(fallback_result.retrieval_provenance[-1]["channel"], "legacy_fallback")
-        self.assertEqual(fallback_result.sources[-1], "instsci")
+        self.assertEqual(response.source_status["legacy_fallback:q_legacy_fallback_1"]["count"], 2)
 
     def test_hybrid_can_use_external_legacy_fallback_results(self) -> None:
         keyword = SearchResult(title="Keyword", year=2024, doi="10.1000/keyword")
@@ -188,6 +184,22 @@ class MultiSearchTests(TestCase):
         self.assertIn("legacy_fallback:q_legacy_fallback_1", response.source_status)
         self.assertEqual(response.source_status["legacy_fallback:q_legacy_fallback_1"]["status"], "success")
         self.assertIn("10.1000/external", [result.doi for result in response.results])
+
+    def test_hybrid_derives_legacy_fallback_from_existing_keyword_channels(self) -> None:
+        keyword = SearchResult(title="Keyword", year=2024, doi="10.1000/keyword")
+        fallback = SearchResult(title="Fallback", year=2023, doi="10.1000/fallback")
+        with (
+            patch("instsci.multi_search.openalex.search", return_value=[keyword, fallback]),
+            patch("instsci.multi_search.openalex.search_semantic", return_value=[]),
+            patch("instsci.multi_search._legacy_search_with_status") as internal_legacy,
+        ):
+            response = multi_search.search_with_status("topic", limit=10, sources="openalex", strategy="hybrid")
+
+        internal_legacy.assert_not_called()
+        self.assertEqual(response.source_status["legacy_fallback:q_legacy_fallback_1"]["status"], "success")
+        self.assertEqual(response.source_status["legacy_fallback:q_legacy_fallback_1"]["count"], 2)
+        self.assertIn("openalex_keyword:q_keyword_1", response.channel_results)
+        self.assertIn("legacy_fallback:q_legacy_fallback_1", response.channel_results)
 
     def test_hybrid_recall_floor_keeps_legacy_top_n_candidates(self) -> None:
         hybrid_only = multi_search.MergedSearchResult(
@@ -212,7 +224,7 @@ class MultiSearchTests(TestCase):
 
         floored = multi_search._apply_legacy_recall_floor(ranked, [legacy_first, legacy_second], limit=2)
 
-        self.assertEqual([result.doi for result in floored[:2]], ["10.1000/legacy-first", "10.1000/legacy-second"])
+        self.assertEqual([result.doi for result in floored[:2]], ["10.1000/hybrid", "10.1000/legacy-first"])
 
     def test_hybrid_keeps_same_channel_distinct_query_variants(self) -> None:
         first = multi_search.RetrievalChannel(
@@ -234,7 +246,11 @@ class MultiSearchTests(TestCase):
 
         self.assertEqual(
             sorted(response.source_status),
-            ["semantic_scholar_keyword:q_keyword_1", "semantic_scholar_keyword:q_keyword_2"],
+            [
+                "legacy_fallback:q_legacy_fallback_1",
+                "semantic_scholar_keyword:q_keyword_1",
+                "semantic_scholar_keyword:q_keyword_2",
+            ],
         )
         self.assertEqual(len(response.results), 1)
         self.assertEqual(
@@ -335,6 +351,34 @@ class MultiSearchTests(TestCase):
             [(result.doi, [item["channel"] for item in result.retrieval_provenance]) for result in merged_second],
             [(result.doi, [item["channel"] for item in result.retrieval_provenance]) for result in merged_first],
         )
+
+    def test_same_title_preprint_and_journal_need_author_or_year_evidence_to_merge(self) -> None:
+        preprint_channel = multi_search.RetrievalChannel(
+            key="openalex_semantic",
+            provider="openalex",
+            query_variant="q_semantic_1",
+            weight=1.1,
+            search=lambda: [],
+        )
+        journal_channel = multi_search.RetrievalChannel(
+            key="crossref_keyword",
+            provider="crossref",
+            query_variant="q_keyword_1",
+            weight=0.55,
+            search=lambda: [],
+        )
+        channel_results = {
+            "openalex_semantic:q_semantic_1": [
+                SearchResult(title="Deep Learning", authors=["Alice A"], year=2015, arxiv_id="1501.00001")
+            ],
+            "crossref_keyword:q_keyword_1": [
+                SearchResult(title="Deep Learning", authors=["Bob B"], year=2024, doi="10.1000/deep", journal="Journal")
+            ],
+        }
+
+        merged = multi_search._merge_ranked_channel_results(channel_results, [preprint_channel, journal_channel])
+
+        self.assertEqual(len(merged), 2)
 
     def test_mcp_reports_source_specific_citations_and_provider_status(self) -> None:
         from instsci import mcp_server

@@ -54,6 +54,7 @@ class MultiSearchResponse:
     results: list[MergedSearchResult] = field(default_factory=list)
     source_status: dict[str, dict[str, object]] = field(default_factory=dict)
     query_plan: dict[str, object] = field(default_factory=dict)
+    channel_results: dict[str, list[MergedSearchResult]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -223,7 +224,26 @@ def _can_group_as_versions(target: MergedSearchResult, incoming: MergedSearchRes
     if (target.canonical_work_id or _canonical_work_id(target)) == (incoming.canonical_work_id or _canonical_work_id(incoming)):
         return True
     version_types = {target.version_type, incoming.version_type}
-    return "preprint" in version_types and "journal" in version_types
+    if "preprint" not in version_types or "journal" not in version_types:
+        return False
+    return _years_are_close(target.year, incoming.year) and _has_shared_primary_author(target.authors, incoming.authors)
+
+
+def _years_are_close(first: int | None, second: int | None) -> bool:
+    if first is None or second is None:
+        return False
+    return abs(first - second) <= 2
+
+
+def _has_shared_primary_author(first: list[str], second: list[str]) -> bool:
+    first_names = {_author_key(name) for name in first[:3] if _author_key(name)}
+    second_names = {_author_key(name) for name in second[:3] if _author_key(name)}
+    return bool(first_names & second_names)
+
+
+def _author_key(name: str) -> str:
+    parts = [part for part in "".join(character.lower() if character.isalnum() else " " for character in name).split() if part]
+    return " ".join(parts[-2:]) if parts else ""
 
 
 def _find_merge_target(
@@ -381,7 +401,9 @@ def _hybrid_search_with_status(
         email=email,
         legacy_fallback_results=legacy_fallback_results,
     )
-    channel_results: dict[str, list[object]] = {_status_key(channel): [] for channel in channels}
+    fallback_channel = _legacy_fallback_channel()
+    all_channels = channels + ([fallback_channel] if channels else [])
+    channel_results: dict[str, list[object]] = {_status_key(channel): [] for channel in all_channels}
     source_status: dict[str, dict[str, object]] = {
         _status_key(channel): {
             "provider": channel.provider,
@@ -391,7 +413,7 @@ def _hybrid_search_with_status(
             "count": 0,
             "retryable": False,
         }
-        for channel in channels
+        for channel in all_channels
     }
     if not channels:
         return MultiSearchResponse(
@@ -431,17 +453,32 @@ def _hybrid_search_with_status(
                 }
                 channel_results[key] = []
 
-    merged = _merge_ranked_channel_results(channel_results, channels)
+    fallback_key = _status_key(fallback_channel)
+    fallback_results = (
+        list(legacy_fallback_results)
+        if legacy_fallback_results is not None
+        else _legacy_results_from_keyword_channels(selected_sources, channel_results, limit=limit)
+    )
+    channel_results[fallback_key] = fallback_results
+    source_status[fallback_key] = {
+        **source_status[fallback_key],
+        "status": "success",
+        "count": len(fallback_results),
+        "detail": "provided_baseline" if legacy_fallback_results is not None else "derived_from_channel_snapshots",
+    }
+
+    merged = _merge_ranked_channel_results(channel_results, all_channels)
     merged.sort(key=_hybrid_sort_key)
     merged = _apply_legacy_recall_floor(
         merged,
-        channel_results.get("legacy_fallback:q_legacy_fallback_1", []),
+        channel_results.get(fallback_key, []),
         limit=limit,
     )
     return MultiSearchResponse(
         results=merged[: max(limit, 0)],
         source_status=source_status,
-        query_plan=build_query_plan(query, strategy="hybrid", year_range=year_range, sources=selected_sources, channels=channels),
+        query_plan=build_query_plan(query, strategy="hybrid", year_range=year_range, sources=selected_sources, channels=all_channels),
+        channel_results=_channel_snapshot_results(channel_results, all_channels),
     )
 
 
@@ -526,28 +563,17 @@ def _build_channels(
                 ),
             )
         )
-    if channels:
-        fallback_results = list(legacy_fallback_results) if legacy_fallback_results is not None else None
-        channels.append(
-            RetrievalChannel(
-                key="legacy_fallback",
-                provider="instsci",
-                query_variant="q_legacy_fallback_1",
-                weight=CHANNEL_WEIGHTS["legacy_fallback"],
-                search=(
-                    (lambda results=fallback_results: results)
-                    if fallback_results is not None
-                    else lambda: _legacy_search_with_status(
-                        query,
-                        limit=limit,
-                        year_range=year_range,
-                        sources=",".join(sources),
-                        email=email,
-                    ).results
-                ),
-            )
-        )
     return channels
+
+
+def _legacy_fallback_channel() -> RetrievalChannel:
+    return RetrievalChannel(
+        key="legacy_fallback",
+        provider="instsci",
+        query_variant="q_legacy_fallback_1",
+        weight=CHANNEL_WEIGHTS["legacy_fallback"],
+        search=lambda: [],
+    )
 
 
 def _status_key(channel: RetrievalChannel) -> str:
@@ -589,6 +615,63 @@ def _merge_ranked_channel_results(
     return merged
 
 
+def _legacy_results_from_keyword_channels(
+    sources: list[str],
+    channel_results: dict[str, list[object]],
+    *,
+    limit: int,
+) -> list[MergedSearchResult]:
+    channel_by_source = {
+        "semantic_scholar": "semantic_scholar_keyword:q_keyword_1",
+        "openalex": "openalex_keyword:q_keyword_1",
+        "crossref": "crossref_keyword:q_keyword_1",
+    }
+    provider_results = {
+        source: channel_results.get(channel_by_source[source], [])
+        for source in sources
+        if source in channel_by_source
+    }
+    merged: list[MergedSearchResult] = []
+    doi_aliases: dict[str, MergedSearchResult] = {}
+    title_aliases: dict[str, list[MergedSearchResult]] = {}
+    family_aliases: dict[str, list[MergedSearchResult]] = {}
+    max_results = max((len(items) for items in provider_results.values()), default=0)
+    for position in range(max_results):
+        for source in sources:
+            if source not in provider_results or position >= len(provider_results[source]):
+                continue
+            incoming = _from_provider(provider_results[source][position], source)
+            target = _find_merge_target(incoming, doi_aliases, title_aliases, family_aliases)
+            if target is None:
+                target = incoming
+                merged.append(target)
+            else:
+                _merge(target, incoming)
+            _register_aliases(target, doi_aliases, title_aliases, family_aliases)
+    return merged[: max(limit, 0)]
+
+
+def _channel_snapshot_results(
+    channel_results: dict[str, list[object]],
+    channels: list[RetrievalChannel],
+) -> dict[str, list[MergedSearchResult]]:
+    snapshots: dict[str, list[MergedSearchResult]] = {}
+    for channel in channels:
+        key = _status_key(channel)
+        snapshots[key] = [
+            _from_provider(
+                raw_result,
+                channel.provider,
+                channel=channel.key,
+                query_variant=channel.query_variant,
+                rank=rank,
+                channel_weight=channel.weight,
+            )
+            for rank, raw_result in enumerate(channel_results.get(key, []), 1)
+        ]
+    return snapshots
+
+
 def _hybrid_sort_key(result: MergedSearchResult) -> tuple[float, int, int, str, str]:
     return (
         -round(result.fusion_score, 12),
@@ -624,13 +707,14 @@ def _apply_legacy_recall_floor(
     *,
     limit: int,
 ) -> list[MergedSearchResult]:
-    """Keep legacy top-N membership while preserving hybrid order inside that set."""
+    """Keep a legacy safety band while leaving room for hybrid-only candidates."""
     max_results = max(limit, 0)
     if max_results == 0 or not legacy_fallback_results:
         return ranked
 
     fallback_keys: set[str] = set()
-    for result in legacy_fallback_results[:max_results]:
+    protected_count = max(1, max_results // 2)
+    for result in legacy_fallback_results[:protected_count]:
         fallback_keys.update(_result_match_keys(result))
     if not fallback_keys:
         return ranked

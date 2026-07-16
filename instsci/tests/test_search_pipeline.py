@@ -1516,6 +1516,33 @@ class SearchPipelineTests(TestCase):
         self.assertTrue(all("pool_sources" not in item for item in judgments))
         self.assertTrue(all("retrieval_provenance" not in item for item in judgments))
 
+    def test_relevance_pool_uses_raw_channel_results_outside_final_ranking(self) -> None:
+        hybrid = {
+            "schema": "instsci.search_results.v2",
+            "query": "topic",
+            "query_plan": {"strategy": "hybrid"},
+            "results": [
+                {"index": 1, "title": "Hybrid A", "doi": "10.1000/a", "year": 2020},
+            ],
+            "channel_results": {
+                "openalex_semantic:q_semantic_1": [
+                    {
+                        "index": 1,
+                        "title": "Semantic candidate",
+                        "doi": "10.1000/semantic",
+                        "year": 2024,
+                        "retrieval_provenance": [
+                            {"channel": "openalex_semantic", "query_variant": "q_semantic_1", "rank": 1}
+                        ],
+                    }
+                ]
+            },
+        }
+
+        pool = build_relevance_pool({"hybrid": hybrid}, legacy_top=0, hybrid_top=1, channel_top=10)
+
+        self.assertEqual({item["id"] for item in pool["judgments"]}, {"doi:10.1000/a", "doi:10.1000/semantic"})
+
     def test_validate_relevance_pool_reports_contract_errors(self) -> None:
         report = validate_relevance_pool(
             {

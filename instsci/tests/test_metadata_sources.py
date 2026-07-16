@@ -13,15 +13,17 @@ from instsci.sources.errors import ProviderSearchError
 
 
 class FakeResponse:
-    def __init__(self, payload=None, text="", status_code=200, headers=None):
+    def __init__(self, payload=None, text="", status_code=200, headers=None, url=""):
         self.payload = payload
         self.text = text
         self.status_code = status_code
         self.headers = headers or {}
+        self.url = url
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
+            suffix = f" for url: {self.url}" if self.url else ""
+            raise requests.HTTPError(f"HTTP {self.status_code}{suffix}", response=self)
         return None
 
     def json(self):
@@ -90,7 +92,7 @@ class MetadataSourceTests(TestCase):
         with patch(
             "instsci.sources.openalex.request_with_retry",
             return_value=FakeResponse(
-                {"limit": 100000, "remaining": 99999},
+                {"rate_limit": {"daily_remaining_usd": 0.5, "credits_remaining": 9999}},
                 headers={"X-RateLimit-Remaining": "99999"},
             ),
         ) as request:
@@ -100,6 +102,29 @@ class MetadataSourceTests(TestCase):
         self.assertEqual(params["api_key"], fake_key)
         self.assertTrue(report["api_key_configured"])
         self.assertNotIn(fake_key, json.dumps(report))
+
+    def test_openalex_rate_limit_status_understands_official_quota_shape(self) -> None:
+        fake_key = "test-openalex-key"
+        with patch(
+            "instsci.sources.openalex.request_with_retry",
+            return_value=FakeResponse(
+                {
+                    "rate_limit": {
+                        "daily_budget_usd": 1,
+                        "daily_used_usd": 1,
+                        "daily_remaining_usd": 0.0,
+                        "prepaid_remaining_usd": 0,
+                        "resets_in_seconds": 123,
+                        "credits_remaining": 0,
+                    }
+                }
+            ),
+        ):
+            report = openalex.get_rate_limit_status(api_key=fake_key)
+
+        self.assertEqual(report["status"], "quota_exhausted")
+        self.assertEqual(report["body"]["rate_limit"]["daily_remaining_usd"], 0.0)
+        self.assertEqual(report["body"]["rate_limit"]["resets_in_seconds"], 123)
 
     def test_openalex_rate_limit_status_reports_authentication_required(self) -> None:
         response = FakeResponse(
@@ -111,6 +136,35 @@ class MetadataSourceTests(TestCase):
 
         self.assertEqual(report["status"], "authentication_required")
         self.assertFalse(report["api_key_configured"])
+
+    def test_openalex_403_rate_limit_is_not_authentication_required(self) -> None:
+        fake_key = "test-openalex-key"
+        response = FakeResponse(
+            {"error": "Rate limit exceeded"},
+            status_code=403,
+        )
+        with patch("instsci.sources.openalex.request_with_retry", return_value=response):
+            with self.assertRaises(ProviderSearchError) as error:
+                openalex.search("topic", api_key=fake_key, raise_on_error=True)
+
+        self.assertEqual(error.exception.status, "quota_exhausted")
+
+    def test_openalex_error_detail_and_logs_redact_api_key_from_url(self) -> None:
+        fake_key = "test-openalex-key"
+        response = FakeResponse(
+            None,
+            text="",
+            status_code=500,
+            url=f"https://api.openalex.org/works?search=topic&api_key={fake_key}",
+        )
+        with patch("instsci.sources.openalex.request_with_retry", return_value=response):
+            with self.assertLogs("instsci.sources.openalex", level="WARNING") as logs:
+                with self.assertRaises(ProviderSearchError) as error:
+                    openalex.search("topic", api_key=fake_key, raise_on_error=True)
+
+        self.assertNotIn(fake_key, error.exception.detail)
+        self.assertNotIn(fake_key, "\n".join(logs.output))
+        self.assertIn("api_key=<redacted>", error.exception.detail)
 
     def test_cli_openalex_rate_limit_writes_redacted_report(self) -> None:
         runner = CliRunner()

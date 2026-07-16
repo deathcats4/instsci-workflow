@@ -499,6 +499,7 @@ def build_search_payload(
     source: str = "semantic_scholar",
     source_status: dict[str, dict[str, Any]] | None = None,
     query_plan: dict[str, Any] | None = None,
+    channel_results: dict[str, Iterable[Any]] | None = None,
 ) -> dict[str, Any]:
     records = [result_to_record(result, index, source=source) for index, result in enumerate(results, 1)]
     sources = list(
@@ -522,6 +523,14 @@ def build_search_payload(
     }
     if use_v2_contract:
         payload["query_plan"] = dict(query_plan or {})
+        if channel_results:
+            payload["channel_results"] = {
+                str(channel): [
+                    result_to_record(result, index, source=source)
+                    for index, result in enumerate(channel_records, 1)
+                ]
+                for channel, channel_records in channel_results.items()
+            }
     return payload
 
 

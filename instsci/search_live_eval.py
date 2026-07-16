@@ -243,6 +243,7 @@ def run_live_evaluation(
                 source="multi_source",
                 source_status=hybrid_response.source_status,
                 query_plan=hybrid_response.query_plan,
+                channel_results=hybrid_response.channel_results,
             )
             hybrid_contract_report = validate_search_payload_contract(hybrid_payload)
             hybrid_contract_path = query_dir / "hybrid_contract_validation.json"
