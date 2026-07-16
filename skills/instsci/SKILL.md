@@ -46,6 +46,99 @@ instsci publisher-batch dois.txt --publisher acs --institution "Institution Name
 
 Code-level work may use `PublisherBatchDownloader`, `ACSCloakBatchDownloader`, or the same visible built-in browser context.
 
+## Publisher Routing / WAF Loop Preflight
+
+When a publisher page repeatedly returns to a robot check, CAPTCHA, Cloudflare,
+Turnstile, or other verification page after the user completes the visible
+challenge, treat it first as a routing/session/WAF-loop diagnostic, not as a
+signal to keep clicking or to bypass verification.
+
+Safety comes first:
+
+- Never automate, bypass, farm out, or guess CAPTCHA, OTP, password, SSO, or
+  human-verification steps.
+- Do not promise that routing changes will solve publisher checks. They are a
+  diagnostic path only.
+- Stop batch retries when verification loops. Record `waf_blocked` or
+  `human_verification_required` as appropriate, then inspect routing before
+  retrying a small single-DOI run.
+
+Use this decision chain:
+
+```text
+Repeated verification loop
+-> stop batch retries
+-> verify CLI path/version
+-> capture browser-doctor state
+-> inspect sanitized proxy/connector presence
+-> compare article/login/PDF asset route consistency
+-> retry one DOI with --mode diagnose
+-> if loop persists, record waf_blocked and stop
+```
+
+Before continuing a looped publisher run, ask the user or run locally:
+
+```powershell
+Get-Command instsci -All
+where.exe instsci
+python -c "import instsci; print(instsci.__version__); print(instsci.__file__)"
+
+instsci browser-doctor `
+  --publisher publisher-name `
+  --output .\runs\waf_diagnostic
+
+Get-ChildItem Env: |
+  Where-Object { $_.Name -match '^(HTTP|HTTPS|ALL|NO)_PROXY$' } |
+  Select-Object Name, @{
+    Name = 'Configured'
+    Expression = { -not [string]::IsNullOrWhiteSpace($_.Value) }
+  }
+```
+
+Do not print, paste, log, or commit full proxy URLs, `.codex/env` contents,
+connector URLs, cookies, tokens, or institution-private route details. Report
+only whether a route is configured and, when needed, a redacted scheme/host/port
+with userinfo, query parameters, and tokens removed. `instsci config-cmd --show`
+may expose a connector URL in current releases; if used, inspect it locally and
+redact before sharing.
+
+Check whether `.codex/env`, shell environment variables, system proxy settings,
+rule-mode VPNs, or local proxy ports are sending publisher traffic through the
+wrong exit. Do not treat generic Clash/V2Ray-style proxies such as
+`127.0.0.1:7897` as an InstSci campus connector. `--connector-url` is for an
+institution-supported connector route, not a generic proxy shortcut.
+
+For any publisher, keep the article domain, institution-login domain, and PDF
+asset domain on the intended legal access route when possible. A regular
+browser, CloakBrowser, API request, institution SSO page, and signed PDF asset
+may not all follow the same proxy rules. If their exit IP or browser state
+differs, WAF challenges, institution sessions, or page-generated PDF tokens can
+loop or expire.
+
+For Elsevier / ScienceDirect specifically, route consistency often involves:
+
+- `api.elsevier.com`
+- `www.sciencedirect.com`
+- `auth.elsevier.com`
+- `pdf.sciencedirectassets.com`
+- `*.elsevier.com`
+
+Direct-first protects the Elsevier API route only. If a workflow falls back to
+the visible ScienceDirect browser route, Codex/global proxy settings can still
+affect the browser or publisher session unless the user's network rules route
+those domains through the intended campus, library, institutional VPN, or other
+lawful access path.
+
+After inspecting routing, retry only one DOI first:
+
+```powershell
+instsci papers .\one_doi.txt `
+  --publisher publisher-name `
+  --mode diagnose `
+  --watch-browser focus `
+  --output .\runs\single_doi_diagnose
+```
+
 ## Chinese Literature Portals
 
 Treat Chinese literature databases as visible-browser portal workflows, not as

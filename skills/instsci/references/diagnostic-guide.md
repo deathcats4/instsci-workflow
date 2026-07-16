@@ -71,6 +71,33 @@ Different tools may route traffic differently from the regular browser. If a pub
 - try campus network or institution-supported route first
 - avoid changing global network policy blindly during a batch
 
+If a publisher verification page loops after the user completes the visible
+challenge, stop batch retries and inspect route consistency before trying again:
+
+- check `Get-Command instsci -All`, `where.exe instsci`, and `python -c "import instsci; print(instsci.__version__); print(instsci.__file__)"` so the user is not running an old CLI
+- capture the current visible state with `instsci browser-doctor --publisher publisher-name --output .\runs\waf_diagnostic`
+- inspect `instsci config-cmd --show` locally for access URL, connector URL, and Elsevier API configuration, but redact connector URLs before sharing because current CLI output may expose full route values
+- check shell and Codex environment proxy presence without printing values:
+
+```powershell
+Get-ChildItem Env: |
+  Where-Object { $_.Name -match '^(HTTP|HTTPS|ALL|NO)_PROXY$' } |
+  Select-Object Name, @{
+    Name = 'Configured'
+    Expression = { -not [string]::IsNullOrWhiteSpace($_.Value) }
+  }
+```
+
+- do not print, paste, log, or commit full proxy URLs, `.codex/env` contents, connector URLs, cookies, tokens, or institution-private route details
+- do not treat generic local proxy ports, for example `127.0.0.1:7897`, as an InstSci campus connector unless that route is the user's institution-supported access path
+- keep the publisher article domain, institution-login domain, and PDF asset domain on the intended legal access route where possible
+- after changing routing, retry one DOI with `--mode diagnose`; do not resume a large batch first
+
+For Elsevier / ScienceDirect, check `api.elsevier.com`,
+`www.sciencedirect.com`, `auth.elsevier.com`,
+`pdf.sciencedirectassets.com`, and `*.elsevier.com`. For other publishers,
+apply the same principle to their article, login, and PDF asset domains.
+
 Document only the general routing lesson in public notes. Keep institution-specific VPN details private.
 
 ## Human Verification Timing
