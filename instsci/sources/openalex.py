@@ -68,8 +68,57 @@ def search(
             raise ProviderSearchError("openalex", classify_provider_exception(exc), str(exc)) from exc
         return []
 
+    return _parse_works(payload.get("results", []))
+
+
+def search_semantic(
+    query: str,
+    limit: int = 10,
+    year_range: str | None = None,
+    *,
+    email: str = "",
+    api_key: str = "",
+    raise_on_error: bool = False,
+) -> list[SearchResult]:
+    """Search OpenAlex Works using its semantic search channel.
+
+    OpenAlex semantic search uses a separate query parameter from lexical
+    search, so callers should treat it as a distinct retrieval channel.
+    """
+    api_key = api_key or os.environ.get("OPENALEX_API_KEY", "")
+    if not api_key:
+        if raise_on_error:
+            raise ProviderSearchError(
+                "openalex",
+                "authentication_required",
+                "OpenAlex semantic search requires OPENALEX_API_KEY.",
+            )
+        return []
+
+    params: dict[str, object] = {"search.semantic": query, "per-page": min(max(limit, 1), 100), "api_key": api_key}
+    filter_value = _year_filter(year_range)
+    if filter_value:
+        params["filter"] = filter_value
+    if email:
+        params["mailto"] = email
+    headers = {"User-Agent": f"instsci/0.2.0a2{f' (mailto:{email})' if email else ''}"}
+    try:
+        response = request_with_retry("GET", OPENALEX_WORKS_API, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        logger.warning("OpenAlex semantic search failed: %s", exc)
+        if raise_on_error:
+            raise ProviderSearchError("openalex", classify_provider_exception(exc), str(exc)) from exc
+        return []
+
+    return _parse_works(payload.get("results", []))
+
+
+def _parse_works(items: object) -> list[SearchResult]:
     results: list[SearchResult] = []
-    for item in payload.get("results", []):
+    works = items if isinstance(items, list) else []
+    for item in works:
         if not isinstance(item, dict):
             continue
         ids = item.get("ids") or {}

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
 from ..http_utils import request_with_retry
+from ..search_pipeline import normalize_doi
 from .errors import ProviderSearchError, classify_provider_exception
 from .semantic_scholar import SearchResult
 
@@ -41,31 +43,7 @@ def _year_filter(year_range: str | None) -> str:
     return ",".join(values)
 
 
-def search(
-    query: str,
-    limit: int = 10,
-    year_range: str | None = None,
-    *,
-    email: str = "",
-    raise_on_error: bool = False,
-) -> list[SearchResult]:
-    params: dict[str, object] = {"query.bibliographic": query, "rows": min(max(limit, 1), 100)}
-    filter_value = _year_filter(year_range)
-    if filter_value:
-        params["filter"] = filter_value
-    if email:
-        params["mailto"] = email
-    headers = {"User-Agent": f"instsci/0.2.0a2{f' (mailto:{email})' if email else ''}"}
-    try:
-        response = request_with_retry("GET", CROSSREF_WORKS_API, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-        items = (response.json().get("message") or {}).get("items") or []
-    except Exception as exc:
-        logger.warning("Crossref search failed: %s", exc)
-        if raise_on_error:
-            raise ProviderSearchError("crossref", classify_provider_exception(exc), str(exc)) from exc
-        return []
-
+def _parse_items(items: list[object]) -> list[SearchResult]:
     results: list[SearchResult] = []
     for item in items:
         if not isinstance(item, dict):
@@ -91,3 +69,87 @@ def search(
             )
         )
     return results
+
+
+def _search_with_params(
+    params: dict[str, object],
+    *,
+    email: str,
+    raise_on_error: bool,
+) -> list[SearchResult]:
+    if email:
+        params["mailto"] = email
+    headers = {"User-Agent": f"instsci/0.2.0a2{f' (mailto:{email})' if email else ''}"}
+    try:
+        response = request_with_retry("GET", CROSSREF_WORKS_API, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
+        items = (response.json().get("message") or {}).get("items") or []
+    except Exception as exc:
+        logger.warning("Crossref search failed: %s", exc)
+        if raise_on_error:
+            raise ProviderSearchError("crossref", classify_provider_exception(exc), str(exc)) from exc
+        return []
+    return _parse_items(items)
+
+
+def search(
+    query: str,
+    limit: int = 10,
+    year_range: str | None = None,
+    *,
+    email: str = "",
+    raise_on_error: bool = False,
+) -> list[SearchResult]:
+    params: dict[str, object] = {"query.bibliographic": query, "rows": min(max(limit, 1), 100)}
+    filter_value = _year_filter(year_range)
+    if filter_value:
+        params["filter"] = filter_value
+    return _search_with_params(params, email=email, raise_on_error=raise_on_error)
+
+
+def search_exact_title(
+    title: str,
+    limit: int = 5,
+    year_range: str | None = None,
+    *,
+    email: str = "",
+    raise_on_error: bool = False,
+) -> list[SearchResult]:
+    """Search Crossref using its title-specific metadata query parameter."""
+    params: dict[str, object] = {"query.title": title, "rows": min(max(limit, 1), 20)}
+    filter_value = _year_filter(year_range)
+    if filter_value:
+        params["filter"] = filter_value
+    return _search_with_params(params, email=email, raise_on_error=raise_on_error)
+
+
+def resolve_identifier(
+    identifier: str,
+    *,
+    email: str = "",
+    raise_on_error: bool = False,
+) -> list[SearchResult]:
+    """Resolve a DOI through the Crossref work endpoint."""
+    doi = normalize_doi(identifier)
+    if not doi or not doi.lower().startswith("10.") or "/" not in doi:
+        return []
+    params: dict[str, object] = {}
+    if email:
+        params["mailto"] = email
+    headers = {"User-Agent": f"instsci/0.2.0a2{f' (mailto:{email})' if email else ''}"}
+    try:
+        response = request_with_retry(
+            "GET",
+            f"{CROSSREF_WORKS_API}/{quote(doi, safe='')}",
+            params=params,
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        item = (response.json().get("message") or {})
+    except Exception as exc:
+        logger.warning("Crossref identifier resolution failed: %s", exc)
+        if raise_on_error:
+            raise ProviderSearchError("crossref", classify_provider_exception(exc), str(exc)) from exc
+        return []
+    return _parse_items([item])

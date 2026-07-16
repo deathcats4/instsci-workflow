@@ -3735,6 +3735,7 @@ def search(
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum results."),
     year: str = typer.Option("", "--year", "-y", help="Year range, e.g., '2020-2024' or '2020-'."),
     sources: str = typer.Option("semantic_scholar,openalex,crossref", "--sources", help="Comma-separated metadata sources."),
+    strategy: str = typer.Option("legacy", "--strategy", help="Search strategy: legacy or hybrid."),
     do_fetch: bool = typer.Option(False, "--fetch", help="Also fetch full text for results with DOIs."),
     output: str = typer.Option("", "--output", "-o", help="Write structured search results to a .json or .csv file."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
@@ -3751,6 +3752,7 @@ def search(
             year_range=year or None,
             sources=sources,
             email=config.email,
+            strategy=strategy,
         )
         results = search_response.results
     except ValueError as exc:
@@ -3798,12 +3800,15 @@ def search(
 
     if output:
         try:
+            query_plan = search_response.query_plan
+            plan_strategy = str((query_plan or {}).get("strategy") or strategy or "").strip().lower()
             payload = build_search_payload(
                 query,
                 results,
                 year_range=year,
                 source="multi_source",
                 source_status=search_response.source_status,
+                query_plan=query_plan if plan_strategy != "legacy" else None,
             )
             output_path = write_search_payload(payload, output)
         except (OSError, ValueError) as exc:

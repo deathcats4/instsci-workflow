@@ -5,8 +5,9 @@ from instsci.sources import crossref, openalex
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload=None, text=""):
         self.payload = payload
+        self.text = text
 
     def raise_for_status(self):
         return None
@@ -63,3 +64,43 @@ class MetadataSourceTests(TestCase):
         params = request.call_args.kwargs["params"]
         self.assertEqual(params["mailto"], "reader@example.edu")
         self.assertEqual(params["filter"], "from-pub-date:2023-01-01")
+
+    def test_crossref_exact_title_uses_title_query_parameter(self) -> None:
+        payload = {
+            "message": {
+                "items": [
+                    {
+                        "DOI": "10.1000/EXACT",
+                        "title": ["Exact title paper"],
+                        "issued": {"date-parts": [[2024]]},
+                    }
+                ]
+            }
+        }
+        with patch("instsci.sources.crossref.request_with_retry", return_value=FakeResponse(payload)) as request:
+            results = crossref.search_exact_title("Exact title paper", limit=3, email="reader@example.edu")
+
+        self.assertEqual(results[0].doi, "10.1000/EXACT")
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["query.title"], "Exact title paper")
+        self.assertNotIn("query.bibliographic", params)
+
+    def test_crossref_resolve_identifier_uses_work_endpoint(self) -> None:
+        payload = {
+            "message": {
+                "DOI": "10.1000/RESOLVE",
+                "title": ["Resolved DOI paper"],
+                "issued": {"date-parts": [[2024]]},
+                "container-title": ["Journal"],
+            }
+        }
+        with patch("instsci.sources.crossref.request_with_retry", return_value=FakeResponse(payload)) as request:
+            results = crossref.resolve_identifier("https://doi.org/10.1000/RESOLVE", email="reader@example.edu")
+
+        self.assertEqual(results[0].doi, "10.1000/RESOLVE")
+        self.assertEqual(results[0].title, "Resolved DOI paper")
+        url = request.call_args.args[1]
+        params = request.call_args.kwargs["params"]
+        self.assertTrue(url.endswith("/10.1000%2Fresolve"))
+        self.assertEqual(params["mailto"], "reader@example.edu")
+        self.assertNotIn("query.bibliographic", params)
