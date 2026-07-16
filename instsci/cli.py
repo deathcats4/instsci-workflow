@@ -31,8 +31,10 @@ from . import multi_search
 from .publisher_matrix import manifest_next_action, manifest_suggested_paths, normalize_suggested_paths
 from .search_pipeline import (
     build_search_payload,
+    downgrade_search_payload_to_v1,
     load_search_payload,
     parse_selection_indices,
+    validate_search_payload_contract,
     write_search_payload,
     write_selection,
 )
@@ -3857,6 +3859,46 @@ def select_search_results(
     console.print(f"[dim]DOI file: {doi_path}[/dim]")
     console.print(f"[dim]Selection report: {report_path}[/dim]")
 
+
+@app.command("search-downgrade")
+def search_downgrade(
+    search_file: Path = typer.Argument(help="Search v2 JSON/CSV to downgrade for v1 consumers."),
+    output: Path = typer.Option(Path("search_v1.json"), "--output", "-o", help="Downgraded v1 search-result path."),
+):
+    """Write a v1-safe search payload from Search v2 results."""
+    try:
+        payload = load_search_payload(search_file)
+        downgraded = downgrade_search_payload_to_v1(payload)
+        output_path = write_search_payload(downgraded, output)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Could not downgrade search results: {exc}[/red]")
+        raise typer.Exit(2)
+    console.print(f"[green]Search v1 results:[/green] {output_path}")
+
+
+@app.command("search-validate")
+def search_validate(
+    search_file: Path = typer.Argument(help="Search result JSON/CSV to validate against the InstSci search contract."),
+    output: Path = typer.Option(Path("search_contract_validation.json"), "--output", "-o", help="Search contract validation JSON report path."),
+):
+    """Validate a saved search result payload for Search v2 contract compatibility."""
+    try:
+        payload = load_search_payload(search_file)
+        report = validate_search_payload_contract(payload)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Could not validate search results: {exc}[/red]")
+        raise typer.Exit(2)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = report.get("summary") or {}
+    color = "green" if report.get("valid") else "red"
+    console.print(
+        f"[{color}]Search contract validation:[/{color}] {output} "
+        f"(errors={summary.get('error_count', 0)}, warnings={summary.get('warning_count', 0)})"
+    )
+    if not report.get("valid"):
+        raise typer.Exit(2)
 
 @app.command()
 def cache(
