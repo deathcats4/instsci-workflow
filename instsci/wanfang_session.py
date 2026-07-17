@@ -38,6 +38,9 @@ WANFANG_RESULT_AUTHOR_SELECTOR = ".author,.authors,.writer,[class*='author'],[cl
 WANFANG_RESULT_AUTHOR_LINK_SELECTOR = (
     "a[href*='author'],a[href*='Author'],a[href*='writer'],a[href*='Writer']"
 )
+WANFANG_RESULT_AUTHOR_VALUE_SELECTOR = (
+    "span.authors,span.author,span.writer,a.authors,a.author,a.writer"
+)
 WANFANG_DOWNLOAD_CONTROL_SELECTOR = "a,button,div,span"
 WANFANG_DOWNLOAD_LABELS = {"下载", "整篇下载"}
 
@@ -190,13 +193,16 @@ def extract_wanfang_download_candidates_from_html(
         matching_titles = [raw for raw, compact in row_titles if expected and compact == expected]
         row_title_match = bool(matching_titles)
         row_title = matching_titles[0] if matching_titles else (row_titles[0][0] if row_titles else "")
-        preferred_author_nodes = row.select(WANFANG_RESULT_AUTHOR_LINK_SELECTOR)
-        author_nodes = preferred_author_nodes or row.select(WANFANG_RESULT_AUTHOR_SELECTOR)
+        linked_author_nodes = row.select(WANFANG_RESULT_AUTHOR_LINK_SELECTOR)
+        leaf_author_nodes = row.select(WANFANG_RESULT_AUTHOR_VALUE_SELECTOR)
+        author_nodes = linked_author_nodes or leaf_author_nodes or row.select(WANFANG_RESULT_AUTHOR_SELECTOR)
         author_values = [
             str(node.get_text(" ", strip=True) or node.get("title") or "").strip()
             for node in author_nodes
         ]
-        row_authors = ordered_author_names(author_values)
+        row_authors = [
+            author for author in ordered_author_names(author_values) if not re.match(r"^\d{4}年", author)
+        ]
         row_first_author = row_authors[0] if row_authors else ""
         row_author_text = " ".join(row_authors)
         row_author_match = bool(
@@ -350,7 +356,11 @@ def summarize_wanfang_capture_result(
     resolved_pdf_path = wanfang_downloaded_pdf_path(result) if pdf_path is None else pdf_path
     title_match = bool(result.get("filename_title_match")) or (_compact_text(title) in _compact_text(text))
     normalized_author = normalize_author_name(first_author)
-    pdf_first_author = first_author_from_pdf_signature(author_signature_text, title=title)
+    pdf_first_author = first_author_from_pdf_signature(
+        author_signature_text,
+        title=title,
+        expected_author=first_author,
+    )
     author_match = bool(normalized_author and normalized_author == normalize_author_name(pdf_first_author))
     valid_pdf = (
         resolved_pdf_path is not None
@@ -465,6 +475,7 @@ def inspect_wanfang_result_download(
         "title_selector": WANFANG_RESULT_TITLE_SELECTOR,
         "author_selector": WANFANG_RESULT_AUTHOR_SELECTOR,
         "author_link_selector": WANFANG_RESULT_AUTHOR_LINK_SELECTOR,
+        "author_value_selector": WANFANG_RESULT_AUTHOR_VALUE_SELECTOR,
         "control_selector": WANFANG_DOWNLOAD_CONTROL_SELECTOR,
         "labels": sorted(WANFANG_DOWNLOAD_LABELS),
     }
@@ -476,6 +487,7 @@ def inspect_wanfang_result_download(
               const titleSelector = args.title_selector;
               const authorSelector = args.author_selector;
               const authorLinkSelector = args.author_link_selector;
+              const authorValueSelector = args.author_value_selector;
               const controlSelector = args.control_selector;
               const labels = args.labels || [];
               const norm = (s) => String(s || "").replace(/\\s+/g, "").toLowerCase();
@@ -490,8 +502,9 @@ def inspect_wanfang_result_download(
                 .filter((item) => item.raw && item.compact);
               const orderedAuthors = (row) => {
                 if (!row) return [];
-                const preferred = [...row.querySelectorAll(authorLinkSelector)];
-                const nodes = preferred.length ? preferred : [...row.querySelectorAll(authorSelector)];
+                const linked = [...row.querySelectorAll(authorLinkSelector)];
+                const leaves = [...row.querySelectorAll(authorValueSelector)];
+                const nodes = linked.length ? linked : (leaves.length ? leaves : [...row.querySelectorAll(authorSelector)]);
                 const seen = new Set();
                 const result = [];
                 for (const node of nodes) {
@@ -500,6 +513,7 @@ def inspect_wanfang_result_download(
                   if (!cleaned || /^(?:作者|authors?|writers?)\\s*[:：]?$/i.test(cleaned)) continue;
                   for (const part of cleaned.split(/[;；、，|\\/]+/)) {
                     const author = part.replace(/^[\\s,，;；、|\\/]+|[\\s,，;；、|\\/]+$/g, "");
+                    if (/^\\d{4}年/.test(author)) continue;
                     const key = [...author.toLowerCase()].filter((c) => /[\\p{L}]/u.test(c)).join("");
                     if (key && !seen.has(key)) { seen.add(key); result.push(author); }
                   }
@@ -592,6 +606,7 @@ def click_wanfang_result_download(
         "title_selector": WANFANG_RESULT_TITLE_SELECTOR,
         "author_selector": WANFANG_RESULT_AUTHOR_SELECTOR,
         "author_link_selector": WANFANG_RESULT_AUTHOR_LINK_SELECTOR,
+        "author_value_selector": WANFANG_RESULT_AUTHOR_VALUE_SELECTOR,
         "control_selector": WANFANG_DOWNLOAD_CONTROL_SELECTOR,
         "labels": sorted(WANFANG_DOWNLOAD_LABELS),
     }
@@ -614,6 +629,7 @@ def click_wanfang_result_download(
               const titleSelector = selection.title_selector;
               const authorSelector = selection.author_selector;
               const authorLinkSelector = selection.author_link_selector;
+              const authorValueSelector = selection.author_value_selector;
               const controlSelector = selection.control_selector;
               const labels = selection.labels || [];
               const norm = (s) => String(s || "").replace(/\\s+/g, "").toLowerCase();
@@ -629,8 +645,9 @@ def click_wanfang_result_download(
                 .filter((item) => item.raw && item.compact);
               const firstAuthor = (row) => {
                 if (!row) return "";
-                const preferred = [...row.querySelectorAll(authorLinkSelector)];
-                const nodes = preferred.length ? preferred : [...row.querySelectorAll(authorSelector)];
+                const linked = [...row.querySelectorAll(authorLinkSelector)];
+                const leaves = [...row.querySelectorAll(authorValueSelector)];
+                const nodes = linked.length ? linked : (leaves.length ? leaves : [...row.querySelectorAll(authorSelector)]);
                 for (const node of nodes) {
                   const cleaned = String(node.innerText || node.title || "")
                     .replace(/^\\s*(?:作者|authors?|writers?)\\s*[:：]\\s*/i, "").trim();

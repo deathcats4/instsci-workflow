@@ -107,6 +107,43 @@ class ChineseBatchBehaviorTests(TestCase):
         self.assertEqual(row["standard_status"], "ambiguous_search_result")
         self.assertEqual(row["result_evidence"], "browser_verified")
 
+    def test_cnki_no_exact_title_consumes_no_quota_and_never_captures(self) -> None:
+        source = self._input("cnki-no-exact", "cnki")
+        run_dir = self.root / "run-cnki-no-exact"
+        page = _FakePage()
+        context = _FakeContext(page)
+        navigation = {
+            "session_status": "unexpected_page",
+            "fallback_used": False,
+            "search_result": {
+                "selected": False,
+                "clicked": False,
+                "reason": "no_exact_title_result",
+                "title_candidate_count": 0,
+                "author_match_count": 0,
+                "author_disambiguation_used": False,
+            },
+        }
+        with (
+            patch("instsci.cli.Config.load", return_value=self.config),
+            patch("instsci.cnki_session.open_cnki_login_session", return_value=(context, page, run_dir)),
+            patch("instsci.cnki_session.navigate_cnki_article_via_search", return_value=navigation),
+            patch("instsci.chinese_download_quota.reserve_chinese_download") as reserve,
+            patch("instsci.cnki_session.capture_cnki_pdf") as capture,
+        ):
+            result = self.runner.invoke(
+                app,
+                ["cnki-batch", str(source), "--output", str(run_dir), "--delay", "2"],
+            )
+
+        self.assertEqual(result.exit_code, 2, result.output)
+        reserve.assert_not_called()
+        capture.assert_not_called()
+        row = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))[0]
+        self.assertEqual(row["standard_status"], "capture_failed")
+        self.assertEqual(row["result_evidence"], "browser_verified")
+        self.assertEqual(row["search_result_reason"], "no_exact_title_result")
+
     def test_wanfang_ambiguous_candidate_is_browser_verified_and_consumes_no_quota(self) -> None:
         source = self._input("wanfang-ambiguous", "wanfang")
         run_dir = self.root / "run-wanfang-ambiguous"
@@ -183,7 +220,7 @@ class ChineseBatchBehaviorTests(TestCase):
         context = _FakeContext(page)
         navigation = {
             "session_status": "portal_ready",
-            "search_result": {"selected": True, "reason": "", "author_disambiguation_used": False},
+            "search_result": {"selected": True, "clicked": True, "reason": "", "author_disambiguation_used": False},
         }
         with (
             patch("instsci.cli.Config.load", return_value=self.config),
@@ -260,7 +297,7 @@ class ChineseBatchBehaviorTests(TestCase):
         cnki_run = self.root / "run-cnki-shared"
         cnki_navigation = {
             "session_status": "portal_ready",
-            "search_result": {"selected": True, "reason": "", "author_disambiguation_used": False},
+            "search_result": {"selected": True, "clicked": True, "reason": "", "author_disambiguation_used": False},
         }
         with (
             patch("instsci.cli.Config.load", return_value=self.config),

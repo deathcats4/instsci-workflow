@@ -109,6 +109,28 @@ class WanfangSessionTests(TestCase):
         self.assertIsNone(chosen)
         self.assertEqual(candidates[0]["row_first_author"], "王五")
 
+    def test_wanfang_prefers_leaf_author_nodes_over_metadata_parent(self) -> None:
+        html = """
+        <div class="result-item">
+          <span class="title">深度学习研究综述</span>
+          <div class="author-area">
+            [期刊论文]<span class="authors">张菊</span><span class="authors">郭永峰</span>
+            -《教学研究》<span class="authors">2021年3期</span>
+          </div>
+          <button class="wf-list-button">下载</button>
+        </div>
+        """
+
+        candidates = extract_wanfang_download_candidates_from_html(
+            html,
+            title="深度学习研究综述",
+            first_author="张菊",
+        )
+
+        self.assertEqual(candidates[0]["row_first_author"], "张菊")
+        self.assertEqual(candidates[0]["row_authors"], ["张菊", "郭永峰"])
+        self.assertTrue(candidates[0]["row_author_match"])
+
     def test_wanfang_unique_title_remains_compatible_without_author(self) -> None:
         html = """
         <div class="result-item">

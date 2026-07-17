@@ -161,7 +161,11 @@ def _verify_chinese_pdf_identity(
     compact_text = "".join(str(text or "").split()).casefold()
     compact_title = "".join(str(title or "").split()).casefold()
     normalized_author = normalize_author_name(first_author)
-    pdf_first_author = first_author_from_pdf_signature(author_signature_text, title=title)
+    pdf_first_author = first_author_from_pdf_signature(
+        author_signature_text,
+        title=title,
+        expected_author=first_author,
+    )
     author_match = bool(normalized_author and normalized_author == normalize_author_name(pdf_first_author))
     title_match = bool(compact_title and compact_title in compact_text)
     return {
@@ -2015,6 +2019,26 @@ def cnki_batch(
                             "title_candidate_count": effective_search_result.get("title_candidate_count", 0),
                             "author_match_count": effective_search_result.get("author_match_count", 0),
                             "author_disambiguation_used": effective_search_result.get("author_disambiguation_used", False),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    continue
+                if (
+                    navigation_mode == "search"
+                    and not bool(effective_navigation.get("fallback_used"))
+                    and not bool(effective_search_result.get("clicked"))
+                ):
+                    reason = str(effective_search_result.get("reason") or "search_result_not_selected")
+                    failure = item_evidence / f"{reason}.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row.update(
+                        {
+                            "standard_status": "capture_failed",
+                            "result_evidence": "browser_verified",
+                            "next_action": "inspect_visible_search_results_or_refine_query",
+                            "evidence": str(failure),
+                            "search_result_reason": reason,
                         }
                     )
                     rows.append(row)

@@ -55,6 +55,8 @@ search the full result-row text. Strong author separators preserve order;
 ambiguous author containers fail closed. The browser code reports exact-title
 candidate count, extracted first author, author-match count, whether author
 disambiguation was used, and the selected row identity.
+Portal-specific leaf author nodes take precedence over parent metadata
+containers, and issue/date labels are excluded from the ordered author list.
 
 The first version evaluates loaded result rows and does not automatically walk
 pagination. If the visible portal state does not provide a unique candidate,
@@ -185,4 +187,9 @@ compatibility cases.
 7. A `record_id` match never bypasses exact-title verification.
 8. Required PDF authors are verified only from the title-adjacent first-page
    signature, not the whole document.
-9. No real portal download is required by the automated test suite.
+9. A search result with no exact title never reaches quota reservation or PDF
+   capture.
+10. PDF text extraction may split a Chinese first-author name across adjacent
+    lines; only the explicitly requested title-adjacent first author may be
+    reassembled.
+11. No real portal download is required by the automated test suite.

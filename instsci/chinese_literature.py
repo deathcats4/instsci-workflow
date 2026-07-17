@@ -58,9 +58,10 @@ _SIGNATURE_METADATA = re.compile(
     r"大学|学院|研究所|实验室|医院|department|university|institute|laboratory)",
     re.IGNORECASE,
 )
+_SINGLE_CJK_CHARACTER = re.compile(r"^[\u3400-\u9fff]$")
 
 
-def first_author_from_pdf_signature(text: str, *, title: str) -> str:
+def first_author_from_pdf_signature(text: str, *, title: str, expected_author: str = "") -> str:
     """Extract the first author from the title-adjacent first-page signature.
 
     The function intentionally returns empty when title placement or the author
@@ -86,13 +87,23 @@ def first_author_from_pdf_signature(text: str, *, title: str) -> str:
             break
     if title_end is None:
         return ""
-    for line in lines[title_end + 1 : min(title_end + 6, signature_end)]:
+    signature_lines = lines[title_end + 1 : min(title_end + 6, signature_end)]
+    for index, line in enumerate(signature_lines):
         if not line:
             continue
         if _SIGNATURE_STOP.search(line):
             return ""
         if _SIGNATURE_METADATA.search(line) or len(line) > 240 or "。" in line:
             continue
+        expected = str(expected_author or "").strip()
+        if expected and _SINGLE_CJK_CHARACTER.fullmatch(line):
+            expected_characters = [character for character in expected if _SINGLE_CJK_CHARACTER.fullmatch(character)]
+            if len(expected_characters) == len(expected) and 2 <= len(expected_characters) <= 4:
+                fragments = signature_lines[index : index + len(expected_characters)]
+                if all(_SINGLE_CJK_CHARACTER.fullmatch(fragment) for fragment in fragments):
+                    combined = "".join(fragments)
+                    if normalize_author_name(combined) == normalize_author_name(expected):
+                        return combined
         first = first_author_from_result_values([line])
         if first:
             return first

@@ -65,6 +65,18 @@ class ChineseLiteraturePortalTests(unittest.TestCase):
 
         self.assertEqual(first_author_from_pdf_signature(text, title="同题研究"), "")
 
+    def test_pdf_signature_reassembles_expected_first_author_split_across_lines(self):
+        text = "深度学习研究综述\n张\n菊\n郭永峰\n某大学\n摘要"
+
+        self.assertEqual(
+            first_author_from_pdf_signature(text, title="深度学习研究综述", expected_author="张菊"),
+            "张菊",
+        )
+        self.assertEqual(
+            first_author_from_pdf_signature(text, title="深度学习研究综述", expected_author="郭永峰"),
+            "张",
+        )
+
     def test_catalog_includes_common_chinese_literature_portals(self):
         keys = {portal.key for portal in list_chinese_literature_portals()}
 
