@@ -308,6 +308,7 @@ class PublicLanguageTests(unittest.TestCase):
         self.assertIn("first-page signature", text)
         self.assertIn("instsci chinese-quota status", text)
         self.assertIn("instsci chinese-quota repair", text)
+        self.assertIn("relevance sorting", text)
 
     def test_inst_sci_skill_documents_chinese_author_and_quota_guards(self):
         text = Path("skills/instsci/SKILL.md").read_text(encoding="utf-8")
@@ -323,6 +324,8 @@ class PublicLanguageTests(unittest.TestCase):
         self.assertIn("first-page signature", text)
         self.assertIn("instsci chinese-quota status", text)
         self.assertIn("instsci chinese-quota repair", text)
+        self.assertIn("relevance sorting", text)
+        self.assertIn("later-coauthor negative", text)
 
     def test_inst_sci_module_entrypoint_is_available(self):
         result = subprocess.run(

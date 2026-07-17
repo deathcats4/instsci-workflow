@@ -33,6 +33,12 @@ author list is not required after the first author has been derived.
 Candidate identity is evaluated within a single result row; page-level author
 or title text is never accepted as evidence for a different row.
 
+CNKI must visibly activate relevance sorting before collecting candidates.
+This makes older exact-title rows reachable instead of leaving the result list
+in publication-time order. A missing control, failed activation, or timeout is
+a fail-closed result: do not select, reserve quota, use a direct fallback, or
+capture a PDF.
+
 Selection order is:
 
 1. Collect result rows whose normalized title exactly matches the requested
@@ -193,3 +199,5 @@ compatibility cases.
     lines; only the explicitly requested title-adjacent first author may be
     reassembled.
 11. No real portal download is required by the automated test suite.
+12. CNKI exact-title selection occurs only after relevance sorting is confirmed
+    active; sort failure consumes no quota and performs no capture.

@@ -189,6 +189,11 @@ only in the body, acknowledgements, or references does not pass.
 
 For CNKI search mode, each record needs `record_id` and `title`; `url` is optional and used only as a fallback. Direct mode still requires a validated CNKI URL. Single-record CNKI downloads accept `--title`; InstSci marks `file_status=success` only when extracted PDF text matches the title or record id. A valid PDF that cannot be tied to the requested record is kept as `file_status=unverified` with `standard_status=pdf_candidate_conflict`.
 
+Before evaluating CNKI candidates, search mode requires visible relevance sorting
+to be active so older exact-title rows are not hidden by publication-time order.
+If relevance sorting is unavailable or does not become active, InstSci fails
+closed: it does not select a result, reserve quota, or attempt a download.
+
 For Wanfang, records use `record_id`, `title`, and optional `query`/`url`; the batch route searches `s.wanfangdata.com.cn`, clicks the result-row download control, and captures the browser-generated `Fulltext/Download` PDF popup. CNKI and Wanfang classify visible SSO/CARSI/OpenAthens or configured institution pages as `auth_required`, so the user can complete login in the visible browser and retry the same run.
 
 CNKI and Wanfang share one local daily limit of 100 download attempts. InstSci

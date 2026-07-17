@@ -15,6 +15,7 @@
 - Existing author-less rows remain valid when an exact title identifies one loaded result row.
 - Duplicate exact-title rows require one uniquely extracted same-row first author; later coauthors never match.
 - A record ID may select only among exact-title rows and never overrides a title mismatch.
+- CNKI must confirm relevance sorting before candidate evaluation; sort failure fails closed before quota reservation.
 - If author disambiguation was required, the PDF title-adjacent first-page signature must have the same first author.
 - Corrupt, locked, or unwritable quota state fails closed and performs no download.
 - Automated tests must not call a live portal or start a browser.
@@ -170,7 +171,7 @@ Implement the pure selector with this result contract:
 }
 ```
 
-Refactor the first browser evaluation to collect safe dictionaries containing `candidate_id`, `href`, `title`, and ordered same-row `row_authors` without clicking. Use the pure selector, then run a second evaluation that finds the marked candidate, recomputes its href/title/first author, rejects drift as `candidate_changed`, and clicks only after the selected identity still matches. Require exact title even when `record_id` matches. Pass `first_author` through `navigate_cnki_article_via_search` and include the selection evidence under `search_result`.
+Before collecting candidates, activate and confirm CNKI relevance sorting. If the control is missing, activation times out, or verification interrupts sorting, return fail-closed evidence and do not select or fall back. Refactor the first browser evaluation to collect safe dictionaries containing `candidate_id`, `href`, `title`, and ordered same-row `row_authors` without clicking. Use the pure selector, then run a second evaluation that finds the marked candidate, recomputes its href/title/first author, rejects drift as `candidate_changed`, and clicks only after the selected identity still matches. Require exact title even when `record_id` matches. Pass `first_author` through `navigate_cnki_article_via_search` and include the sort and selection evidence under `relevance_sort` and `search_result`.
 
 Do not use the direct URL fallback when `reason == "ambiguous_search_result"`; an ambiguous search must remain blocked.
 

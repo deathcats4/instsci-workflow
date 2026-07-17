@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from instsci.cnki_session import (
@@ -10,7 +11,9 @@ from instsci.cnki_session import (
     cnki_search_url,
     cnki_url_is_allowed,
     cnki_verification_visible,
+    ensure_cnki_relevance_sort,
     load_cnki_batch,
+    navigate_cnki_article_via_search,
     safe_page_url,
 )
 from instsci.config import Config
@@ -200,6 +203,107 @@ class CnkiSessionTests(TestCase):
         self.assertFalse(result["clicked"])
         self.assertEqual(result["reason"], "candidate_changed")
         self.assertTrue(result["author_disambiguation_used"])
+
+    def test_cnki_relevance_sort_waits_until_control_is_active(self) -> None:
+        class SortPage:
+            def __init__(self) -> None:
+                self.responses = [
+                    {"ready": False, "available": True, "active": False, "clicked": True, "changed": True},
+                    {"available": True, "active": True},
+                ]
+
+            def evaluate(self, _script: str) -> object:
+                return self.responses.pop(0)
+
+        with patch("instsci.cnki_session.cnki_verification_visible", return_value=False):
+            result = ensure_cnki_relevance_sort(SortPage(), settle_seconds=0)
+
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["active"])
+        self.assertTrue(result["changed"])
+
+    def test_cnki_relevance_sort_fails_closed_when_control_is_missing(self) -> None:
+        class MissingSortPage:
+            def evaluate(self, _script: str) -> object:
+                return {
+                    "ready": False,
+                    "available": False,
+                    "active": False,
+                    "clicked": False,
+                    "reason": "relevance_sort_unavailable",
+                }
+
+        result = ensure_cnki_relevance_sort(MissingSortPage(), settle_seconds=0)
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "relevance_sort_unavailable")
+
+    def test_cnki_navigation_sorts_before_candidate_selection(self) -> None:
+        class SearchPage:
+            url = "https://kns.cnki.net/kns8s/defaultresult/index"
+
+            def wait_for_load_state(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        events: list[str] = []
+
+        def sort_result(*_args: object, **_kwargs: object) -> dict[str, object]:
+            events.append("sort")
+            return {"ready": True, "active": True, "changed": True}
+
+        def select_result(*_args: object, **_kwargs: object) -> dict[str, object]:
+            events.append("select")
+            return {"selected": False, "clicked": False, "reason": "no_exact_title_result"}
+
+        with (
+            patch("instsci.cnki_session._assign_or_commit"),
+            patch("instsci.cnki_session.submit_cnki_search", return_value={"submitted": True}),
+            patch("instsci.cnki_session.cnki_verification_visible", return_value=False),
+            patch("instsci.cnki_session.cnki_search_results_visible", return_value=True),
+            patch("instsci.cnki_session.ensure_cnki_relevance_sort", side_effect=sort_result),
+            patch("instsci.cnki_session.click_cnki_search_result", side_effect=select_result),
+            patch("instsci.cnki_session.time.sleep"),
+        ):
+            result = navigate_cnki_article_via_search(
+                SearchPage(),
+                title="同题研究",
+                timeout_ms=100,
+                settle_seconds=0,
+            )
+
+        self.assertEqual(events, ["sort", "select"])
+        self.assertEqual(result["relevance_sort"]["active"], True)
+
+    def test_cnki_navigation_does_not_select_when_relevance_sort_fails(self) -> None:
+        class SearchPage:
+            url = "https://kns.cnki.net/kns8s/defaultresult/index"
+
+            def wait_for_load_state(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        with (
+            patch("instsci.cnki_session._assign_or_commit"),
+            patch("instsci.cnki_session.submit_cnki_search", return_value={"submitted": True}),
+            patch("instsci.cnki_session.cnki_verification_visible", return_value=False),
+            patch("instsci.cnki_session.cnki_search_results_visible", return_value=True),
+            patch(
+                "instsci.cnki_session.ensure_cnki_relevance_sort",
+                return_value={"ready": False, "reason": "relevance_sort_unavailable"},
+            ),
+            patch("instsci.cnki_session.click_cnki_search_result") as select,
+            patch("instsci.cnki_session.time.sleep"),
+        ):
+            result = navigate_cnki_article_via_search(
+                SearchPage(),
+                title="同题研究",
+                timeout_ms=100,
+                settle_seconds=0,
+            )
+
+        select.assert_not_called()
+        self.assertEqual(result["session_status"], "search_sort_unavailable")
+        self.assertEqual(result["search_result"]["reason"], "relevance_sort_unavailable")
+
     def test_cnki_verification_page_requires_user(self) -> None:
         self.assertEqual(
             classify_cnki_session("https://kns.cnki.net/verify/home?captchaType=clickWord", "安全验证"),

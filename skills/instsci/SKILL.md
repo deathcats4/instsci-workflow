@@ -180,6 +180,9 @@ instsci chinese-literature-sites
   must refuse active or unparseable locks.
 - CNKI is the primary Chinese full-text route: use the persistent CNKI profile
   and the search-first batch path (`instsci cnki-batch ... --navigation-mode search`).
+  Before exact-title and first-author evaluation, require visible relevance sorting
+  to be active. If the sort control is missing or never becomes active, fail
+  closed without selecting a result, reserving quota, or attempting a download.
   In search mode, records need `record_id` and `title`; `url` is optional and
   used only as a fallback. Direct mode still requires a validated CNKI URL.
   Prefer homepage/search-result navigation before saved detail URLs because
@@ -189,6 +192,11 @@ instsci chinese-literature-sites
   Single-record `cnki-fetch` needs `--title` or a text-visible record id before
   a captured PDF can be marked `file_status=success`; otherwise keep it
   `unverified/pdf_candidate_conflict`.
+- After changing Chinese-portal selectors or identity logic, use a visible-browser
+  smoke test with one duplicate exact title: run one true-first-author positive
+  selection and one later-coauthor negative selection. Store screenshots and
+  manifests under the external runtime directory, verify negative cases consume
+  no quota, and never turn this check into a bulk download.
 - Wanfang is a browser-verified search-download route: start at
   `s.wanfangdata.com.cn`, click the result-row `下载` control, and capture the
   PDF from the `Fulltext/Download` popup. Keep this flow in the same visible

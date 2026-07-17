@@ -173,6 +173,98 @@ def cnki_search_results_visible(page: Any) -> bool:
         return False
 
 
+def ensure_cnki_relevance_sort(
+    page: Any,
+    *,
+    timeout_ms: int = 10_000,
+    settle_seconds: float = 1.5,
+) -> dict[str, object]:
+    """Make CNKI result selection deterministic by requiring relevance sort."""
+    try:
+        initial = dict(
+            page.evaluate(
+                """() => {
+                  const control = document.querySelector('#orderList #FFD');
+                  if (!control) {
+                    return { ready: false, available: false, active: false, clicked: false,
+                      reason: "relevance_sort_unavailable" };
+                  }
+                  if (control.classList.contains('cur')) {
+                    return { ready: true, available: true, active: true, clicked: false,
+                      changed: false, reason: "" };
+                  }
+                  control.click();
+                  return { ready: false, available: true, active: false, clicked: true,
+                    changed: true, reason: "" };
+                }"""
+            )
+            or {}
+        )
+    except Exception as exc:
+        return {
+            "ready": False,
+            "available": False,
+            "active": False,
+            "clicked": False,
+            "changed": False,
+            "reason": "relevance_sort_error",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if initial.get("ready"):
+        return initial
+    if not initial.get("available"):
+        return initial
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while time.monotonic() < deadline:
+        if cnki_verification_visible(page):
+            return {
+                **initial,
+                "ready": False,
+                "active": False,
+                "reason": "human_verification_required",
+                "verification_required": True,
+            }
+        try:
+            state = dict(
+                page.evaluate(
+                    """() => {
+                      const control = document.querySelector('#orderList #FFD');
+                      return {
+                        available: Boolean(control),
+                        active: Boolean(control?.classList.contains('cur')),
+                      };
+                    }"""
+                )
+                or {}
+            )
+        except Exception as exc:
+            return {
+                **initial,
+                "ready": False,
+                "active": False,
+                "reason": "relevance_sort_error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if not state.get("available"):
+            return {
+                **initial,
+                "ready": False,
+                "active": False,
+                "reason": "relevance_sort_unavailable",
+            }
+        if state.get("active"):
+            if settle_seconds > 0:
+                time.sleep(settle_seconds)
+            return {**initial, "ready": True, "active": True, "reason": ""}
+        time.sleep(0.25)
+    return {
+        **initial,
+        "ready": False,
+        "active": False,
+        "reason": "relevance_sort_timeout",
+    }
+
+
 def _assign_or_commit(page: Any, url: str, detail: dict[str, object], *, timeout_ms: int) -> None:
     try:
         page.evaluate("target => { window.location.assign(target); }", url)
@@ -483,6 +575,38 @@ def navigate_cnki_article_via_search(
         if cnki_search_results_visible(page):
             break
         time.sleep(1)
+
+    relevance_sort = ensure_cnki_relevance_sort(
+        page,
+        timeout_ms=min(timeout_ms, 10_000),
+        settle_seconds=min(max(settle_seconds, 0), 2.0),
+    )
+    detail["relevance_sort"] = relevance_sort
+    if not relevance_sort.get("ready"):
+        reason = str(relevance_sort.get("reason") or "relevance_sort_unavailable")
+        verification_required = bool(relevance_sort.get("verification_required"))
+        detail.update(
+            {
+                "ready": verification_required,
+                "session_status": (
+                    "human_verification_required" if verification_required else "search_sort_unavailable"
+                ),
+                "verification_required": verification_required,
+                "pdf_button_visible": False,
+                "page_url": safe_page_url(str(getattr(page, "url", "") or "")),
+                "search_result": {
+                    "selected": False,
+                    "clicked": False,
+                    "result_found": cnki_search_results_visible(page),
+                    "reason": reason,
+                    "selection_method": "",
+                    "title_candidate_count": 0,
+                    "author_match_count": 0,
+                    "author_disambiguation_used": False,
+                },
+            }
+        )
+        return detail
 
     result_click = click_cnki_search_result(
         page,
