@@ -10,6 +10,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 # Fix Windows console encoding for Unicode output
@@ -26,6 +27,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Config
+from .chinese_literature import first_author_from_pdf_signature, normalize_author_name
 from .fetcher import PaperFetcher
 from . import multi_search
 from .publisher_matrix import manifest_next_action, manifest_suggested_paths, normalize_suggested_paths
@@ -49,6 +51,11 @@ zotero_app = typer.Typer(help="Prepare Zotero MCP import handoffs.", no_args_is_
 app.add_typer(zotero_app, name="zotero")
 evidence_app = typer.Typer(help="Manage the external private-evidence index.", no_args_is_help=True)
 app.add_typer(evidence_app, name="evidence")
+chinese_quota_app = typer.Typer(
+    help="Inspect Chinese-portal attempt counts and configured safety limits, or repair a stale PID lock.",
+    no_args_is_help=True,
+)
+app.add_typer(chinese_quota_app, name="chinese-quota")
 console = Console()
 
 
@@ -65,6 +72,9 @@ STANDARD_STATUSES = {
     "capture_failed",
     "browser_group_pending",
     "unsupported_publisher",
+    "ambiguous_search_result",
+    "daily_limit_reached",
+    "quota_state_error",
 }
 FILE_STATUSES = {"success", "unverified", "missing"}
 RESULT_EVIDENCE_VALUES = {
@@ -74,6 +84,164 @@ RESULT_EVIDENCE_VALUES = {
     "http_preflight",
     "not_verified",
 }
+
+
+def _chinese_quota_ledger_path(config: Config) -> Path:
+    """Return the local CNKI/Wanfang attempt ledger path."""
+    return Path(config.cache_dir).expanduser() / "chinese_download_quota.json"
+
+
+def _resolve_chinese_download_policy(
+    config: Config,
+    *,
+    portal: str,
+    daily_limit: int | None = None,
+    no_daily_limit: bool = False,
+):
+    """Resolve config and per-command overrides into one auditable policy."""
+    from .chinese_download_quota import ChineseDownloadPolicy
+
+    if portal not in {"cnki", "wanfang"}:
+        raise ValueError("portal must be cnki or wanfang")
+    if daily_limit is not None and no_daily_limit:
+        raise ValueError("--daily-limit and --no-daily-limit cannot be used together")
+    if daily_limit is not None and daily_limit < 1:
+        raise ValueError("--daily-limit must be a positive integer")
+    if no_daily_limit:
+        combined_limit = None
+        portal_limit = None
+    else:
+        combined_limit = config.chinese_download_combined_daily_limit
+        configured_portal_limit = (
+            config.cnki_daily_download_limit
+            if portal == "cnki"
+            else config.wanfang_daily_download_limit
+        )
+        portal_limit = daily_limit if daily_limit is not None else configured_portal_limit
+    return ChineseDownloadPolicy(
+        warning_threshold=config.chinese_download_warning_threshold,
+        combined_daily_limit=combined_limit,
+        portal_daily_limit=portal_limit,
+    )
+
+
+def _print_chinese_download_warning(quota) -> None:
+    if not quota.warning_triggered:
+        return
+    console.print(
+        "[yellow]This InstSci installation has made "
+        f"{quota.used} automated Chinese-portal download attempts today. "
+        f"{quota.warning_threshold} is a conservative InstSci reminder, not a uniform "
+        "official CNKI or Wanfang limit. Check your institution's database rules.[/yellow]"
+    )
+
+
+@chinese_quota_app.command("status")
+def chinese_quota_status(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Show today's portal counts, effective configured limits, and ledger health."""
+    from .chinese_download_quota import inspect_chinese_download_quota
+
+    config = Config.load()
+    try:
+        status = inspect_chinese_download_quota(
+            _chinese_quota_ledger_path(config),
+            warning_threshold=config.chinese_download_warning_threshold,
+            combined_limit=config.chinese_download_combined_daily_limit,
+            cnki_limit=config.cnki_daily_download_limit,
+            wanfang_limit=config.wanfang_daily_download_limit,
+        )
+    except ValueError as exc:
+        if json_output:
+            console.print_json(data={"policy_valid": False, "error": str(exc)})
+        else:
+            console.print(f"[red]Invalid Chinese download policy: {exc}[/red]")
+        raise typer.Exit(2)
+    if json_output:
+        console.print_json(data=status)
+    else:
+        table = Table(title="Chinese Download Quota")
+        table.add_column("Field")
+        table.add_column("Value")
+        for field in (
+            "date",
+            "combined_used",
+            "combined_limit",
+            "combined_remaining",
+            "cnki_used",
+            "cnki_limit",
+            "cnki_remaining",
+            "wanfang_used",
+            "wanfang_limit",
+            "wanfang_remaining",
+            "warning_threshold",
+            "warning_reached",
+            "ledger_valid",
+            "lock_exists",
+            "lock_pid",
+            "lock_pid_running",
+            "stale_lock",
+            "repairable",
+        ):
+            table.add_row(field, str(status.get(field)))
+        console.print(table)
+        if status.get("ledger_error"):
+            console.print(f"[red]{status['ledger_error']}[/red]")
+        if status.get("lock_error"):
+            console.print(f"[red]{status['lock_error']}[/red]")
+    if not status.get("ledger_valid") or status.get("lock_error"):
+        raise typer.Exit(2)
+
+
+@chinese_quota_app.command("repair")
+def chinese_quota_repair(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+):
+    """Remove only a stale lock whose recorded PID is no longer running."""
+    from .chinese_download_quota import ChineseDownloadQuotaError, repair_chinese_download_quota_lock
+
+    try:
+        result = repair_chinese_download_quota_lock(_chinese_quota_ledger_path(Config.load()))
+    except ChineseDownloadQuotaError as exc:
+        if json_output:
+            console.print_json(data={"removed": False, "error": str(exc)})
+        else:
+            console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    if json_output:
+        console.print_json(data=result)
+    elif result.get("removed"):
+        console.print("[green]Removed the verified stale Chinese quota lock.[/green]")
+    else:
+        console.print("[green]No Chinese quota lock is present; nothing changed.[/green]")
+
+
+def _verify_chinese_pdf_identity(
+    title: str,
+    first_author: str,
+    text: str,
+    *,
+    author_required: bool,
+    author_signature_text: str = "",
+) -> dict[str, object]:
+    """Verify title and, after author disambiguation, first-author identity."""
+    compact_text = "".join(str(text or "").split()).casefold()
+    compact_title = "".join(str(title or "").split()).casefold()
+    normalized_author = normalize_author_name(first_author)
+    pdf_first_author = first_author_from_pdf_signature(
+        author_signature_text,
+        title=title,
+        expected_author=first_author,
+    )
+    author_match = bool(normalized_author and normalized_author == normalize_author_name(pdf_first_author))
+    title_match = bool(compact_title and compact_title in compact_text)
+    return {
+        "title_match": title_match,
+        "author_match": author_match,
+        "pdf_first_author": pdf_first_author,
+        "verified": title_match and (author_match or not author_required),
+    }
 
 
 def _setup_logging(verbose: bool = False):
@@ -1663,12 +1831,15 @@ def cnki_batch(
     file: Path = typer.Argument(help="JSON array of CNKI records: record_id, title, optional url, and optional zotero_item_key."),
     output: str = typer.Option("", "--output", "-o", help="Private run directory for PDFs, screenshots, and manifests."),
     delay: float = typer.Option(30.0, "--delay", min=2.0, help="Seconds between article downloads."),
+    daily_limit: Optional[int] = typer.Option(None, "--daily-limit", min=1, help="Temporary hard limit for CNKI attempts on this local day."),
+    no_daily_limit: bool = typer.Option(False, "--no-daily-limit", help="Disable configured hard daily limits for this command; reminders still apply."),
     verification_policy: str = typer.Option("stop", "--verification-policy", help="Human-verification policy: stop or prompt."),
     navigation_mode: str = typer.Option("search", "--navigation-mode", help="CNKI article navigation mode: search or direct."),
     skip_completed: bool = typer.Option(True, "--skip-completed/--no-skip-completed", help="When --output has a prior manifest, keep successful rows and skip them."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
 ):
     """Download a small CNKI batch in one persistent visible browser session."""
+    from .chinese_download_quota import ChineseDownloadQuotaError, reserve_chinese_download
     from .cnki_session import (
         capture_cnki_pdf,
         CNKI_HOST_SUFFIXES,
@@ -1705,6 +1876,16 @@ def cnki_batch(
         return
 
     cfg = Config.load()
+    try:
+        download_policy = _resolve_chinese_download_policy(
+            cfg,
+            portal="cnki",
+            daily_limit=daily_limit,
+            no_daily_limit=no_daily_limit,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
     cfg.ensure_dirs()
     other_portal_domains = set(chinese_literature_session_domains()) - set(CNKI_HOST_SUFFIXES)
     auth_domains = tuple(domain for domain in configured_session_domains(cfg) if domain not in other_portal_domains)
@@ -1758,12 +1939,14 @@ def cnki_batch(
             if record_id in completed_ids:
                 continue
             title = record["title"]
+            first_author = record["first_author"]
             item_evidence = evidence_dir / record_id
             item_evidence.mkdir(parents=True, exist_ok=True)
             row: dict[str, object] = {
                 "publisher": "CNKI",
                 "record_id": record_id,
                 "title": title,
+                "first_author": first_author,
                 "zotero_item_key": record["zotero_item_key"],
                 "route_attempted": (
                     "persistent_cloakbrowser_search_pdf_button"
@@ -1784,11 +1967,21 @@ def cnki_batch(
                         title=title,
                         fallback_url=record["url"],
                         record_id=record_id,
+                        first_author=first_author,
                         auth_domains=auth_domains,
                     )
                 else:
                     navigation = navigate_cnki_article(page, record["url"], auth_domains=auth_domains)
                 row["navigation"] = navigation
+                search_result = navigation.get("search_result") if isinstance(navigation.get("search_result"), dict) else {}
+                for field in (
+                    "title_candidate_count",
+                    "author_match_count",
+                    "author_disambiguation_used",
+                    "selection_method",
+                ):
+                    if field in search_result:
+                        row[field] = search_result[field]
                 session_status = str(
                     navigation.get("session_status")
                     or classify_cnki_session(str(getattr(page, "url", "") or ""), "", auth_domains=auth_domains)
@@ -1811,6 +2004,20 @@ def cnki_batch(
                     rows.append(row)
                     write_checkpoint()
                     break
+                if session_status == "ambiguous_search_result":
+                    failure = item_evidence / "ambiguous_search_result.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row.update(
+                        {
+                            "standard_status": "ambiguous_search_result",
+                            "result_evidence": "browser_verified",
+                            "next_action": "inspect_visible_search_results_and_select_manually",
+                            "evidence": str(failure),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    continue
                 if (
                     session_status == "human_verification_required"
                     or navigation.get("verification_required")
@@ -1843,6 +2050,7 @@ def cnki_batch(
                                 title=title,
                                 fallback_url=record["url"],
                                 record_id=record_id,
+                                first_author=first_author,
                                 auth_domains=auth_domains,
                             )
                             row["post_verification_navigation"] = renavigation
@@ -1860,8 +2068,99 @@ def cnki_batch(
                     rows.append(row)
                     write_checkpoint()
                     break
+                effective_navigation = (
+                    row.get("post_verification_navigation")
+                    if isinstance(row.get("post_verification_navigation"), dict)
+                    else navigation
+                )
+                effective_search_result = (
+                    effective_navigation.get("search_result")
+                    if isinstance(effective_navigation, dict)
+                    and isinstance(effective_navigation.get("search_result"), dict)
+                    else search_result
+                )
+                for field in (
+                    "title_candidate_count",
+                    "author_match_count",
+                    "author_disambiguation_used",
+                    "selection_method",
+                ):
+                    if field in effective_search_result:
+                        row[field] = effective_search_result[field]
+                if effective_search_result.get("reason") == "ambiguous_search_result":
+                    failure = item_evidence / "ambiguous_search_result.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row.update(
+                        {
+                            "standard_status": "ambiguous_search_result",
+                            "result_evidence": "browser_verified",
+                            "next_action": "inspect_visible_search_results_and_select_manually",
+                            "evidence": str(failure),
+                            "title_candidate_count": effective_search_result.get("title_candidate_count", 0),
+                            "author_match_count": effective_search_result.get("author_match_count", 0),
+                            "author_disambiguation_used": effective_search_result.get("author_disambiguation_used", False),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    continue
+                if (
+                    navigation_mode == "search"
+                    and not bool(effective_navigation.get("fallback_used"))
+                    and not bool(effective_search_result.get("clicked"))
+                ):
+                    reason = str(effective_search_result.get("reason") or "search_result_not_selected")
+                    failure = item_evidence / f"{reason}.png"
+                    page.screenshot(path=str(failure), full_page=False)
+                    row.update(
+                        {
+                            "standard_status": "capture_failed",
+                            "result_evidence": "browser_verified",
+                            "next_action": "inspect_visible_search_results_or_refine_query",
+                            "evidence": str(failure),
+                            "search_result_reason": reason,
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    continue
                 before = item_evidence / "before_pdf_click.png"
                 page.screenshot(path=str(before), full_page=False)
+                try:
+                    quota = reserve_chinese_download(
+                        _chinese_quota_ledger_path(cfg),
+                        portal="cnki",
+                        record_id=record_id,
+                        policy=download_policy,
+                    )
+                except ChineseDownloadQuotaError as exc:
+                    row.update(
+                        {
+                            "standard_status": "quota_state_error",
+                            "result_evidence": "not_verified",
+                            "next_action": "inspect_or_repair_local_quota_state_before_retry",
+                            "error": str(exc),
+                            "evidence": str(before),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    break
+                row.setdefault("quota_attempts", []).append(quota.to_json())
+                row["quota"] = quota.to_json()
+                _print_chinese_download_warning(quota)
+                if not quota.allowed:
+                    row.update(
+                        {
+                            "standard_status": "daily_limit_reached",
+                            "result_evidence": "not_verified",
+                            "next_action": "review_configured_download_policy_or_resume_next_local_day",
+                            "evidence": str(before),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    break
                 result = capture_cnki_pdf(page, output_path=pdf_dir / f"{record_id}.pdf", timeout_ms=45_000)
                 if result.get("verification_required"):
                     if verification_policy == "prompt":
@@ -1884,20 +2183,66 @@ def cnki_batch(
                                 title=title,
                                 fallback_url=record["url"],
                                 record_id=record_id,
+                                first_author=first_author,
                                 auth_domains=auth_domains,
                             )
                             row["download_post_verification_navigation"] = renavigation
                         if not settle.get("verification_required"):
+                            try:
+                                quota = reserve_chinese_download(
+                                    _chinese_quota_ledger_path(cfg),
+                                    portal="cnki",
+                                    record_id=record_id,
+                                    policy=download_policy,
+                                )
+                            except ChineseDownloadQuotaError as exc:
+                                row.update(
+                                    {
+                                        "standard_status": "quota_state_error",
+                                        "result_evidence": "not_verified",
+                                        "next_action": "inspect_or_repair_local_quota_state_before_retry",
+                                        "error": str(exc),
+                                    }
+                                )
+                                rows.append(row)
+                                write_checkpoint()
+                                break
+                            row.setdefault("quota_attempts", []).append(quota.to_json())
+                            row["quota"] = quota.to_json()
+                            _print_chinese_download_warning(quota)
+                            if not quota.allowed:
+                                row.update(
+                                    {
+                                        "standard_status": "daily_limit_reached",
+                                        "result_evidence": "not_verified",
+                                        "next_action": "review_configured_download_policy_or_resume_next_local_day",
+                                    }
+                                )
+                                rows.append(row)
+                                write_checkpoint()
+                                break
                             result = capture_cnki_pdf(page, output_path=pdf_dir / f"{record_id}.pdf", timeout_ms=45_000)
                 after = item_evidence / "after_pdf_click.png"
                 page.screenshot(path=str(after), full_page=False)
                 pdf_path = Path(str(result.get("pdf_path") or ""))
                 text = pdf_extractor.extract_text(pdf_path) if pdf_path.exists() else ""
-                title_match = "".join(title.split()) in "".join(text.split())
+                author_signature_text = (
+                    pdf_extractor.extract_first_page_text(pdf_path) if pdf_path.exists() else ""
+                )
+                identity = _verify_chinese_pdf_identity(
+                    title,
+                    first_author,
+                    text,
+                    author_required=bool(row.get("author_disambiguation_used")),
+                    author_signature_text=author_signature_text,
+                )
+                title_match = identity["title_match"]
+                author_match = identity["author_match"]
                 valid_pdf = bool(result.get("pdf_header_valid")) and int(result.get("size_bytes") or 0) > 10_000
+                verified = valid_pdf and identity["verified"]
                 standard_status = (
                     "success"
-                    if valid_pdf and title_match
+                    if verified
                     else (
                         "pdf_candidate_conflict"
                         if valid_pdf
@@ -1909,8 +2254,10 @@ def cnki_batch(
                     {
                         "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
                         "title_match": title_match,
+                        "author_match": author_match,
+                        "pdf_first_author": identity["pdf_first_author"],
                         "text_length": len(text),
-                        "file_status": "success" if valid_pdf and title_match else ("unverified" if valid_pdf else "missing"),
+                        "file_status": "success" if verified else ("unverified" if valid_pdf else "missing"),
                         "standard_status": standard_status,
                         "evidence": str(after),
                         "next_action": (
@@ -1957,6 +2304,8 @@ def wanfang_batch(
     file: Path = typer.Argument(help="JSON array of Wanfang records: record_id, title, optional query/url/zotero_item_key."),
     output: str = typer.Option("", "--output", "-o", help="Private run directory for PDFs, screenshots, and manifests."),
     delay: float = typer.Option(10.0, "--delay", min=2.0, help="Seconds between article downloads."),
+    daily_limit: Optional[int] = typer.Option(None, "--daily-limit", min=1, help="Temporary hard limit for Wanfang attempts on this local day."),
+    no_daily_limit: bool = typer.Option(False, "--no-daily-limit", help="Disable configured hard daily limits for this command; reminders still apply."),
     verification_policy: str = typer.Option("stop", "--verification-policy", help="Human-verification policy: stop or prompt."),
     profile_dir: str = typer.Option("", "--profile-dir", help="Persistent visible browser profile. Defaults to config wanfang_profile_dir."),
     skip_completed: bool = typer.Option(True, "--skip-completed/--no-skip-completed", help="When --output has a prior manifest, keep successful rows and skip them."),
@@ -1964,9 +2313,11 @@ def wanfang_batch(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
 ):
     """Download a small Wanfang batch through search-result download popups."""
+    from .chinese_download_quota import ChineseDownloadQuotaError, reserve_chinese_download
     from .extractors import pdf_extractor
     from .wanfang_session import (
         capture_wanfang_pdf,
+        inspect_wanfang_result_download,
         load_wanfang_batch,
         navigate_wanfang_search,
         open_wanfang_session,
@@ -1995,6 +2346,16 @@ def wanfang_batch(
         raise typer.Exit(2)
 
     cfg = Config.load()
+    try:
+        download_policy = _resolve_chinese_download_policy(
+            cfg,
+            portal="wanfang",
+            daily_limit=daily_limit,
+            no_daily_limit=no_daily_limit,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
     cfg.ensure_dirs()
     other_portal_domains = set(chinese_literature_session_domains()) - set(WANFANG_HOST_SUFFIXES)
     auth_domains = tuple(domain for domain in configured_session_domains(cfg) if domain not in other_portal_domains)
@@ -2066,12 +2427,14 @@ def wanfang_batch(
             if record_id in completed_ids:
                 continue
             title = record["title"]
+            first_author = record["first_author"]
             item_evidence = evidence_dir / record_id
             item_evidence.mkdir(parents=True, exist_ok=True)
             row: dict[str, object] = {
                 "publisher": "Wanfang",
                 "record_id": record_id,
                 "title": title,
+                "first_author": first_author,
                 "query": record["query"],
                 "zotero_item_key": record["zotero_item_key"],
                 "route_attempted": "visible_cloakbrowser_search_download_popup_pdf",
@@ -2121,9 +2484,78 @@ def wanfang_batch(
                         write_checkpoint()
                         break
 
+                selection = inspect_wanfang_result_download(
+                    page,
+                    title=title,
+                    first_author=first_author,
+                )
+                row["selection"] = selection
+                for field in (
+                    "title_candidate_count",
+                    "author_match_count",
+                    "author_disambiguation_used",
+                ):
+                    if field in selection:
+                        row[field] = selection[field]
+                if not selection.get("selected"):
+                    reason = str(selection.get("reason") or "no_exact_title_result")
+                    row.update(
+                        {
+                            "standard_status": (
+                                "ambiguous_search_result"
+                                if reason == "ambiguous_search_result"
+                                else "capture_failed"
+                            ),
+                            "result_evidence": "browser_verified",
+                            "next_action": (
+                                "inspect_visible_search_results_and_select_manually"
+                                if reason == "ambiguous_search_result"
+                                else "inspect_wanfang_search_results_or_refine_query"
+                            ),
+                            "evidence": (row.get("before_screenshots") or [""])[0],
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    continue
+                try:
+                    quota = reserve_chinese_download(
+                        _chinese_quota_ledger_path(cfg),
+                        portal="wanfang",
+                        record_id=record_id,
+                        policy=download_policy,
+                    )
+                except ChineseDownloadQuotaError as exc:
+                    row.update(
+                        {
+                            "standard_status": "quota_state_error",
+                            "result_evidence": "not_verified",
+                            "next_action": "inspect_or_repair_local_quota_state_before_retry",
+                            "error": str(exc),
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    break
+                row.setdefault("quota_attempts", []).append(quota.to_json())
+                row["quota"] = quota.to_json()
+                _print_chinese_download_warning(quota)
+                if not quota.allowed:
+                    row.update(
+                        {
+                            "standard_status": "daily_limit_reached",
+                            "result_evidence": "not_verified",
+                            "next_action": "review_configured_download_policy_or_resume_next_local_day",
+                        }
+                    )
+                    rows.append(row)
+                    write_checkpoint()
+                    break
                 result = capture_wanfang_pdf(
                     page,
                     title=title,
+                    first_author=first_author,
+                    selection=selection,
                     output_path=pdf_dir / f"{record_id}.pdf",
                     timeout_ms=75_000,
                 )
@@ -2131,20 +2563,71 @@ def wanfang_batch(
                     console.print("[yellow]Wanfang requested verification before download. Complete it in the browser.[/yellow]")
                     typer.prompt("Press Enter here after verification", default="", show_default=False)
                     if not wanfang_verification_visible(page):
-                        result = capture_wanfang_pdf(
+                        selection = inspect_wanfang_result_download(
                             page,
                             title=title,
-                            output_path=pdf_dir / f"{record_id}.pdf",
-                            timeout_ms=75_000,
+                            first_author=first_author,
                         )
+                        row["retry_selection"] = selection
+                        if not selection.get("selected"):
+                            result = {
+                                "reason": selection.get("reason") or "no_exact_title_result",
+                                "download_click": selection,
+                            }
+                        else:
+                            try:
+                                quota = reserve_chinese_download(
+                                    _chinese_quota_ledger_path(cfg),
+                                    portal="wanfang",
+                                    record_id=record_id,
+                                    policy=download_policy,
+                                )
+                            except ChineseDownloadQuotaError as exc:
+                                row.update(
+                                    {
+                                        "standard_status": "quota_state_error",
+                                        "result_evidence": "not_verified",
+                                        "next_action": "inspect_or_repair_local_quota_state_before_retry",
+                                        "error": str(exc),
+                                    }
+                                )
+                                rows.append(row)
+                                write_checkpoint()
+                                break
+                            row.setdefault("quota_attempts", []).append(quota.to_json())
+                            row["quota"] = quota.to_json()
+                            _print_chinese_download_warning(quota)
+                            if not quota.allowed:
+                                row.update(
+                                    {
+                                        "standard_status": "daily_limit_reached",
+                                        "result_evidence": "not_verified",
+                                        "next_action": "review_configured_download_policy_or_resume_next_local_day",
+                                    }
+                                )
+                                rows.append(row)
+                                write_checkpoint()
+                                break
+                            result = capture_wanfang_pdf(
+                                page,
+                                title=title,
+                                first_author=first_author,
+                                selection=selection,
+                                output_path=pdf_dir / f"{record_id}.pdf",
+                                timeout_ms=75_000,
+                            )
                 row.update(result)
                 row["after_screenshots"] = screenshot_pages(item_evidence, "after_download")
                 pdf_path = wanfang_downloaded_pdf_path(result)
                 text = pdf_extractor.extract_text(pdf_path) if pdf_path else ""
+                author_signature_text = pdf_extractor.extract_first_page_text(pdf_path) if pdf_path else ""
                 capture_summary = summarize_wanfang_capture_result(
                     result,
                     title=title,
+                    first_author=first_author,
+                    author_required=bool(selection.get("author_disambiguation_used")),
                     text=text,
+                    author_signature_text=author_signature_text,
                     strict_title_match=strict_title_match,
                     pdf_path=pdf_path,
                 )
@@ -2152,6 +2635,8 @@ def wanfang_batch(
                     {
                         "article_url": safe_wanfang_url(str(getattr(page, "url", "") or "")),
                         "title_match": capture_summary["title_match"],
+                        "author_match": capture_summary["author_match"],
+                        "pdf_first_author": capture_summary["pdf_first_author"],
                         "text_length": capture_summary["text_length"],
                         "file_status": capture_summary["file_status"],
                         "standard_status": capture_summary["standard_status"],
@@ -3929,10 +4414,29 @@ def config_cmd(
     set_carsi_enable: bool = typer.Option(False, "--carsi-enable", help="Legacy federated auth option.", hidden=True),
     set_carsi_disable: bool = typer.Option(False, "--carsi-disable", help="Legacy federated auth option.", hidden=True),
     set_carsi_school: str = typer.Option("", "--carsi-school", help="Legacy federated school option.", hidden=True),
+    set_chinese_warning: Optional[int] = typer.Option(None, "--chinese-warning-threshold", min=1, help="Set the non-blocking daily Chinese-portal reminder threshold."),
+    disable_chinese_warning: bool = typer.Option(False, "--no-chinese-warning", help="Disable the daily Chinese-portal reminder."),
+    set_chinese_combined_limit: Optional[int] = typer.Option(None, "--chinese-combined-daily-limit", min=1, help="Set an optional combined CNKI/Wanfang hard daily limit."),
+    clear_chinese_combined_limit: bool = typer.Option(False, "--no-chinese-combined-daily-limit", help="Remove the combined Chinese-portal hard daily limit."),
+    set_cnki_limit: Optional[int] = typer.Option(None, "--cnki-daily-limit", min=1, help="Set an optional CNKI hard daily limit."),
+    clear_cnki_limit: bool = typer.Option(False, "--no-cnki-daily-limit", help="Remove the CNKI hard daily limit."),
+    set_wanfang_limit: Optional[int] = typer.Option(None, "--wanfang-daily-limit", min=1, help="Set an optional Wanfang hard daily limit."),
+    clear_wanfang_limit: bool = typer.Option(False, "--no-wanfang-daily-limit", help="Remove the Wanfang hard daily limit."),
 ):
     """View or update configuration."""
     cfg = Config.load()
     changed = False
+
+    conflicting_policy_options = (
+        (set_chinese_warning, disable_chinese_warning, "Chinese warning threshold"),
+        (set_chinese_combined_limit, clear_chinese_combined_limit, "combined Chinese daily limit"),
+        (set_cnki_limit, clear_cnki_limit, "CNKI daily limit"),
+        (set_wanfang_limit, clear_wanfang_limit, "Wanfang daily limit"),
+    )
+    for value, clear, label in conflicting_policy_options:
+        if value is not None and clear:
+            console.print(f"[red]Cannot set and remove the {label} in one command.[/red]")
+            raise typer.Exit(2)
 
     if set_email:
         cfg.email = set_email
@@ -4015,6 +4519,42 @@ def config_cmd(
         changed = True
         console.print(f"[green]Federated login school set to: {federated_school}[/green]")
 
+    if set_chinese_warning is not None:
+        cfg.chinese_download_warning_threshold = set_chinese_warning
+        changed = True
+        console.print(f"[green]Chinese download reminder set to: {set_chinese_warning} attempts.[/green]")
+    elif disable_chinese_warning:
+        cfg.chinese_download_warning_threshold = None
+        changed = True
+        console.print("[yellow]Chinese download reminder disabled.[/yellow]")
+
+    if set_chinese_combined_limit is not None:
+        cfg.chinese_download_combined_daily_limit = set_chinese_combined_limit
+        changed = True
+        console.print(f"[green]Combined Chinese hard daily limit set to: {set_chinese_combined_limit}.[/green]")
+    elif clear_chinese_combined_limit:
+        cfg.chinese_download_combined_daily_limit = None
+        changed = True
+        console.print("[green]Combined Chinese hard daily limit removed.[/green]")
+
+    if set_cnki_limit is not None:
+        cfg.cnki_daily_download_limit = set_cnki_limit
+        changed = True
+        console.print(f"[green]CNKI hard daily limit set to: {set_cnki_limit}.[/green]")
+    elif clear_cnki_limit:
+        cfg.cnki_daily_download_limit = None
+        changed = True
+        console.print("[green]CNKI hard daily limit removed.[/green]")
+
+    if set_wanfang_limit is not None:
+        cfg.wanfang_daily_download_limit = set_wanfang_limit
+        changed = True
+        console.print(f"[green]Wanfang hard daily limit set to: {set_wanfang_limit}.[/green]")
+    elif clear_wanfang_limit:
+        cfg.wanfang_daily_download_limit = None
+        changed = True
+        console.print("[green]Wanfang hard daily limit removed.[/green]")
+
     if changed:
         cfg.save()
 
@@ -4023,7 +4563,11 @@ def config_cmd(
                       set_connector_url, set_proxy_url,
                        set_elsevier_key, set_elsevier_token,
                        set_federated_enable, set_federated_disable, set_federated_school,
-                       set_carsi_enable, set_carsi_disable, set_carsi_school])
+                       set_carsi_enable, set_carsi_disable, set_carsi_school,
+                       set_chinese_warning is not None, disable_chinese_warning,
+                       set_chinese_combined_limit is not None, clear_chinese_combined_limit,
+                       set_cnki_limit is not None, clear_cnki_limit,
+                       set_wanfang_limit is not None, clear_wanfang_limit])
     if show and not has_setter:
         # Determine school type
         try:
@@ -4047,6 +4591,10 @@ def config_cmd(
         console.print(f"  Output dir:        {cfg.output_dir}")
         console.print(f"  Cache dir:         {cfg.cache_dir}")
         console.print(f"  Cookie path:       {cfg.cookie_path}")
+        console.print(f"  Chinese reminder:  {cfg.chinese_download_warning_threshold or '(disabled)'}")
+        console.print(f"  Chinese hard cap:  {cfg.chinese_download_combined_daily_limit or '(not set)'}")
+        console.print(f"  CNKI hard cap:     {cfg.cnki_daily_download_limit or '(not set)'}")
+        console.print(f"  Wanfang hard cap:  {cfg.wanfang_daily_download_limit or '(not set)'}")
 
 
 def _run_federated_login(

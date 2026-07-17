@@ -164,9 +164,72 @@ instsci cnki-batch .\records_cnki.json --navigation-mode search --output .\runs\
 instsci wanfang-batch .\records_wanfang.json --output .\runs\wanfang
 ```
 
+Batch records may include either an ordered author list or an explicit first
+author:
+
+```json
+[
+  {"record_id": "cnki-1", "title": "示例题名", "authors": ["张三", "李四"]},
+  {"record_id": "cnki-2", "title": "Another title", "first_author": "Smith, John"}
+]
+```
+
+`first_author` takes precedence; otherwise InstSci reads the first non-empty
+entry from `authors`. Only the first author is used for searching and
+disambiguation. A unique exact-title row can proceed without author metadata.
+When more than one row has the exact title, InstSci requires exactly one of
+those same result rows to expose an ordered author list whose first entry equals
+the requested first author. A later coauthor never counts, and an author field
+whose order cannot be extracted reliably is treated as ambiguous. Otherwise it
+records `ambiguous_search_result` with `result_evidence=browser_verified` and
+does not click or download. For CNKI, record_id never overrides an exact-title mismatch.
+If author matching was needed to select the row, the captured PDF must expose
+the same first author in its title-adjacent first-page signature; a name found
+only in the body, acknowledgements, or references does not pass.
+
 For CNKI search mode, each record needs `record_id` and `title`; `url` is optional and used only as a fallback. Direct mode still requires a validated CNKI URL. Single-record CNKI downloads accept `--title`; InstSci marks `file_status=success` only when extracted PDF text matches the title or record id. A valid PDF that cannot be tied to the requested record is kept as `file_status=unverified` with `standard_status=pdf_candidate_conflict`.
 
+Before evaluating CNKI candidates, search mode requires visible relevance sorting
+to be active so older exact-title rows are not hidden by publication-time order.
+If relevance sorting is unavailable or does not become active, InstSci fails
+closed: it does not select a result, reserve an attempt, or start a download.
+
 For Wanfang, records use `record_id`, `title`, and optional `query`/`url`; the batch route searches `s.wanfangdata.com.cn`, clicks the result-row download control, and captures the browser-generated `Fulltext/Download` PDF popup. CNKI and Wanfang classify visible SSO/CARSI/OpenAthens or configured institution pages as `auth_required`, so the user can complete login in the visible browser and retry the same run.
+
+CNKI and Wanfang share one local attempt ledger for locking and audit, but they
+do not have a default hard daily limit. At 100 combined automated attempts,
+InstSci prints a conservative reminder; 100 is not a uniform official CNKI or
+Wanfang limit. Failures and retries count as attempts. The ledger covers only
+InstSci runs on this local installation and local calendar day; it cannot count
+manual downloads, other machines, or other users on the same institutional
+exit IP. Ledger corruption or an unavailable ledger fails closed as
+`quota_state_error` instead of allowing an unaudited download.
+
+Users or institutions can configure optional combined or portal-specific hard
+limits. A configured limit stops before capture with `daily_limit_reached`:
+
+```powershell
+instsci config-cmd --chinese-warning-threshold 80
+instsci config-cmd --chinese-combined-daily-limit 200
+instsci config-cmd --cnki-daily-limit 90 --wanfang-daily-limit 120
+instsci config-cmd --no-chinese-combined-daily-limit --no-cnki-daily-limit
+instsci cnki-batch records.json --daily-limit 30
+instsci wanfang-batch records.json --no-daily-limit
+```
+
+`--daily-limit` temporarily overrides that portal's configured limit while any
+configured combined limit still applies. `--no-daily-limit` disables all hard
+daily limits for that command, but keeps the reminder, ledger, delays, visible
+verification stops, and audit evidence.
+
+Inspect the local count and lock owner without changing state. A repair removes
+only a lock whose recorded PID is no longer running; it refuses active or
+unparseable locks:
+
+```powershell
+instsci chinese-quota status
+instsci chinese-quota repair
+```
 
 Zotero sync also supports Chinese records without DOI: when a successful row has `zotero_item_key` and a PDF, `instsci zotero handoff` creates an `attachment_only` action and `instsci zotero sync` links the PDF to the existing Zotero item.
 ## Zotero

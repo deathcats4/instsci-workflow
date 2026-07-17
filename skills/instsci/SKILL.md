@@ -159,8 +159,44 @@ instsci chinese-literature-sites
   similar Chinese titles; never download or report success from a related title
   merely because keywords overlap. After capture, still require filename or PDF
   text/title verification before `file_status=success`.
+- Batch records may supply `first_author` or an ordered `authors` list;
+  `first_author` takes precedence. Only the first author is used for searching
+  and disambiguation. If an exact title appears in more than one result row,
+  extract an ordered author list from explicit same-row author nodes and compare
+  only its first entry. A later coauthor never counts; if order is unreliable,
+  record `ambiguous_search_result` with `result_evidence=browser_verified` and
+  do not click or download. For CNKI, record_id never overrides an exact-title mismatch.
+  When author matching selects the result, require the same author in the
+  title-adjacent first-page signature; body, acknowledgement, and reference
+  occurrences do not count.
+- CNKI and Wanfang share one local attempt ledger for atomic locking and audit,
+  not a default shared hard limit. The default combined warning threshold is
+  100, but it is a conservative InstSci reminder rather than a uniform official
+  portal limit. Default hard limits are unset. Users or institutions may set a
+  combined limit, a CNKI limit, a Wanfang limit, or a per-command override.
+  Reserve immediately before every browser download action; failures and retries
+  count. Stop at `daily_limit_reached` only when an explicitly configured hard
+  limit is reached. Treat a missing, locked, corrupt, or unwritable ledger as
+  `quota_state_error` and fail closed. The ledger covers only InstSci activity
+  on this installation and local calendar day, not manual downloads, other
+  machines, or other users behind the same institutional exit IP. Keep the
+  default inter-download delays and stop on visible verification; never probe
+  for a portal limit by deliberately downloading until a block appears.
+  Configure policy with `instsci config-cmd --chinese-warning-threshold N`,
+  `--chinese-combined-daily-limit N`, `--cnki-daily-limit N`, or
+  `--wanfang-daily-limit N`; each hard limit also has a corresponding `--no-*`
+  removal option. Batch commands accept `--daily-limit N` for a temporary
+  portal limit and `--no-daily-limit` to disable configured hard limits for that
+  command while retaining reminders and audit.
+  Use `instsci chinese-quota status` to inspect per-portal counts, policy, and
+  lock ownership. Use
+  `instsci chinese-quota repair` only for its PID-checked stale-lock repair; it
+  must refuse active or unparseable locks.
 - CNKI is the primary Chinese full-text route: use the persistent CNKI profile
   and the search-first batch path (`instsci cnki-batch ... --navigation-mode search`).
+  Before exact-title and first-author evaluation, require visible relevance sorting
+  to be active. If the sort control is missing or never becomes active, fail
+  closed without selecting a result, reserving an attempt, or starting a download.
   In search mode, records need `record_id` and `title`; `url` is optional and
   used only as a fallback. Direct mode still requires a validated CNKI URL.
   Prefer homepage/search-result navigation before saved detail URLs because
@@ -170,6 +206,11 @@ instsci chinese-literature-sites
   Single-record `cnki-fetch` needs `--title` or a text-visible record id before
   a captured PDF can be marked `file_status=success`; otherwise keep it
   `unverified/pdf_candidate_conflict`.
+- After changing Chinese-portal selectors or identity logic, use a visible-browser
+  smoke test with one duplicate exact title: run one true-first-author positive
+  selection and one later-coauthor negative selection. Store screenshots and
+  manifests under the external runtime directory, verify negative cases consume
+  no quota, and never turn this check into a bulk download.
 - Wanfang is a browser-verified search-download route: start at
   `s.wanfangdata.com.cn`, click the result-row `下载` control, and capture the
   PDF from the `Fulltext/Download` popup. Keep this flow in the same visible

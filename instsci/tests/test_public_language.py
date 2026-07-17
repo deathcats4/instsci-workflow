@@ -128,6 +128,26 @@ class PublicLanguageTests(unittest.TestCase):
         self.assertIn("--profile-dir", output)
         self.assertIn("--verification-", output)
         self.assertIn("policy: stop or", output)
+        self.assertIn("--daily-limit", output)
+        self.assertIn("--no-daily-limit", output)
+
+    def test_chinese_quota_help_exposes_safe_status_and_repair(self):
+        result = self.runner.invoke(app, ["chinese-quota", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("status", result.output)
+        self.assertIn("repair", result.output)
+        self.assertIn("stale", result.output.lower())
+
+    def test_config_help_exposes_optional_chinese_download_policy(self):
+        result = self.runner.invoke(app, ["config-cmd", "--help"])
+        output = unstyle(result.output)
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--chinese-warning-thre", output)
+        self.assertIn("--chinese-combined-dai", output)
+        self.assertIn("--cnki-daily-limit", output)
+        self.assertIn("--wanfang-daily-limit", output)
 
     def test_agents_requires_builtin_browser_for_publisher_pdf_verdicts(self):
         text = Path("AGENTS.md").read_text(encoding="utf-8")
@@ -283,6 +303,41 @@ class PublicLanguageTests(unittest.TestCase):
         self.assertIn("wanfang-batch", text)
         self.assertIn("manual broker", text)
         self.assertIn("not download-verified", text)
+
+    def test_readme_documents_chinese_author_disambiguation_and_download_policy(self):
+        text = Path("README.md").read_text(encoding="utf-8")
+
+        self.assertIn('"authors": ["张三", "李四"]', text)
+        self.assertIn('"first_author": "Smith, John"', text)
+        self.assertIn("Only the first author is used", text)
+        self.assertIn("ambiguous_search_result", text)
+        self.assertIn("do not have a default hard daily limit", text)
+        self.assertIn("not a uniform official CNKI or", text)
+        self.assertIn("--chinese-combined-daily-limit", text)
+        self.assertIn("--cnki-daily-limit", text)
+        self.assertIn("--no-daily-limit", text)
+        self.assertRegex(text.lower(), r"failures\s+and retries\s+count")
+        self.assertIn("record_id never overrides an exact-title mismatch", text)
+        self.assertIn("first-page signature", text)
+        self.assertIn("instsci chinese-quota status", text)
+        self.assertIn("instsci chinese-quota repair", text)
+        self.assertIn("relevance sorting", text)
+
+    def test_inst_sci_skill_documents_chinese_author_and_quota_guards(self):
+        text = Path("skills/instsci/SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("Only the first author is used", text)
+        self.assertIn("ambiguous_search_result", text)
+        self.assertIn("not a default shared hard limit", text)
+        self.assertIn("conservative InstSci reminder", text)
+        self.assertIn("Default hard limits are unset", text)
+        self.assertRegex(text.lower(), r"failures\s+and retries\s+count")
+        self.assertIn("record_id never overrides an exact-title mismatch", text)
+        self.assertIn("first-page signature", text)
+        self.assertIn("instsci chinese-quota status", text)
+        self.assertIn("instsci chinese-quota repair", text)
+        self.assertIn("relevance sorting", text)
+        self.assertIn("later-coauthor negative", text)
 
     def test_inst_sci_module_entrypoint_is_available(self):
         result = subprocess.run(
