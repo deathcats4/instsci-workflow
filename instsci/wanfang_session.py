@@ -17,6 +17,7 @@ from .chinese_literature import (
     classify_chinese_literature_page,
     first_author_from_record,
     get_chinese_literature_portal,
+    normalize_author_name,
 )
 from .cloakbrowser_compat import prepare_cloakbrowser_runtime
 from .config import Config
@@ -31,6 +32,7 @@ WANFANG_DOWNLOAD_POPUP_HOST = "oss.wanfangdata.com.cn"
 WANFANG_DOWNLOAD_POPUP_PATH = "/Fulltext/Download"
 WANFANG_RESULT_ROW_SELECTOR = ".normal-list,.result-item,.wf-list-item,li[data-record-id]"
 WANFANG_RESULT_TITLE_SELECTOR = ".title,a[title],h2,h3,h4"
+WANFANG_RESULT_AUTHOR_SELECTOR = ".author,.authors,.writer,[class*='author'],[class*='writer']"
 WANFANG_DOWNLOAD_CONTROL_SELECTOR = "a,button,div,span"
 WANFANG_DOWNLOAD_LABELS = {"下载", "整篇下载"}
 
@@ -161,7 +163,12 @@ def wanfang_search_results_visible(page: Any, *, title: str = "") -> bool:
         return False
 
 
-def extract_wanfang_download_candidates_from_html(html: str, *, title: str = "") -> list[dict[str, object]]:
+def extract_wanfang_download_candidates_from_html(
+    html: str,
+    *,
+    title: str = "",
+    first_author: str = "",
+) -> list[dict[str, object]]:
     """Extract Wanfang download candidates from explicit result rows in an HTML fixture."""
     from bs4 import BeautifulSoup
 
@@ -178,6 +185,15 @@ def extract_wanfang_download_candidates_from_html(html: str, *, title: str = "")
         matching_titles = [raw for raw, compact in row_titles if expected and compact == expected]
         row_title_match = bool(matching_titles)
         row_title = matching_titles[0] if matching_titles else (row_titles[0][0] if row_titles else "")
+        author_values = [
+            str(node.get_text(" ", strip=True) or node.get("title") or "").strip()
+            for node in row.select(WANFANG_RESULT_AUTHOR_SELECTOR)
+        ]
+        row_author_text = " ".join(dict.fromkeys(value for value in author_values if value))
+        row_author_match = bool(
+            normalize_author_name(first_author)
+            and normalize_author_name(first_author) in normalize_author_name(row_author_text)
+        )
         for control in row.select(WANFANG_DOWNLOAD_CONTROL_SELECTOR):
             text = _compact_text(str(control.get_text(" ", strip=True) or control.get("title") or ""))
             if text not in WANFANG_DOWNLOAD_LABELS:
@@ -192,21 +208,57 @@ def extract_wanfang_download_candidates_from_html(html: str, *, title: str = "")
                     "row_title": row_title,
                     "row_titles": [raw for raw, _compact in row_titles],
                     "row_index": row_index,
+                    "row_author_text": row_author_text,
+                    "row_author_match": row_author_match,
                     "page_title_match": bool(expected and expected in _compact_text(soup.get_text(" ", strip=True))),
                 }
             )
     return candidates
 
 
-def choose_wanfang_download_candidate(candidates: list[dict[str, object]], *, title: str = "") -> dict[str, object] | None:
-    """Choose a Wanfang download control only when its own result row matches the title."""
+def _select_wanfang_download_candidate(
+    candidates: list[dict[str, object]],
+    *,
+    title: str = "",
+    first_author: str = "",
+) -> dict[str, object]:
+    """Return a Wanfang candidate plus same-row identity evidence."""
     expected = _compact_text(title)
+    exact_candidates = [candidate for candidate in candidates if not expected or bool(candidate.get("row_title_match"))]
+    rows: dict[object, list[dict[str, object]]] = {}
+    for candidate in exact_candidates:
+        row_key = candidate.get("row_index", candidate.get("index"))
+        rows.setdefault(row_key, []).append(candidate)
+    title_candidate_count = len(rows)
+    author_disambiguation_used = title_candidate_count > 1
+    author_match_count = 0
+    eligible_row_keys = set(rows)
+    if author_disambiguation_used:
+        normalized_author = normalize_author_name(first_author)
+        if not normalized_author:
+            eligible_row_keys = set()
+        else:
+            matched_row_keys = {
+                row_key
+                for row_key, row_candidates in rows.items()
+                if any(
+                    normalized_author in normalize_author_name(candidate.get("row_author_text"))
+                    for candidate in row_candidates
+                )
+            }
+            author_match_count = len(matched_row_keys)
+            eligible_row_keys = matched_row_keys if len(matched_row_keys) == 1 else set()
+    elif title_candidate_count == 0:
+        eligible_row_keys = set()
     scored: list[tuple[int, dict[str, object]]] = []
     for candidate in candidates:
         text = _compact_text(str(candidate.get("text") or ""))
         if text not in {"下载", "整篇下载"}:
             continue
         if expected and not bool(candidate.get("row_title_match")):
+            continue
+        row_key = candidate.get("row_index", candidate.get("index"))
+        if row_key not in eligible_row_keys:
             continue
         score = 0
         if text == "下载":
@@ -228,11 +280,48 @@ def choose_wanfang_download_candidate(candidates: list[dict[str, object]], *, ti
             score += 20
         scored.append((score, candidate))
     if not scored:
-        return None
+        return {
+            "selected": False,
+            "candidate": None,
+            "reason": "ambiguous_search_result" if title_candidate_count > 1 else "no_exact_title_result",
+            "title_candidate_count": title_candidate_count,
+            "author_match_count": author_match_count,
+            "author_disambiguation_used": author_disambiguation_used,
+        }
     scored.sort(key=lambda item: item[0], reverse=True)
     chosen = dict(scored[0][1])
     chosen["score"] = scored[0][0]
-    return chosen
+    chosen.update(
+        {
+            "title_candidate_count": title_candidate_count,
+            "author_match_count": author_match_count,
+            "author_disambiguation_used": author_disambiguation_used,
+        }
+    )
+    return {
+        "selected": True,
+        "candidate": chosen,
+        "reason": "",
+        "title_candidate_count": title_candidate_count,
+        "author_match_count": author_match_count,
+        "author_disambiguation_used": author_disambiguation_used,
+    }
+
+
+def choose_wanfang_download_candidate(
+    candidates: list[dict[str, object]],
+    *,
+    title: str = "",
+    first_author: str = "",
+) -> dict[str, object] | None:
+    """Choose a Wanfang control only when one result-row identity remains."""
+    selection = _select_wanfang_download_candidate(
+        candidates,
+        title=title,
+        first_author=first_author,
+    )
+    candidate = selection.get("candidate")
+    return dict(candidate) if isinstance(candidate, dict) else None
 
 
 def summarize_wanfang_capture_result(
@@ -342,13 +431,19 @@ def navigate_wanfang_search(
     return detail
 
 
-def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, object]:
-    """Click the best matching result-row Wanfang download control."""
+def inspect_wanfang_result_download(
+    page: Any,
+    *,
+    title: str,
+    first_author: str = "",
+) -> dict[str, object]:
+    """Inspect Wanfang result rows without clicking a download control."""
     expected = _compact_text(title)
     script_args = {
         "expected": expected,
         "row_selector": WANFANG_RESULT_ROW_SELECTOR,
         "title_selector": WANFANG_RESULT_TITLE_SELECTOR,
+        "author_selector": WANFANG_RESULT_AUTHOR_SELECTOR,
         "control_selector": WANFANG_DOWNLOAD_CONTROL_SELECTOR,
         "labels": sorted(WANFANG_DOWNLOAD_LABELS),
     }
@@ -358,6 +453,7 @@ def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, ob
               const expected = args.expected || "";
               const rowSelector = args.row_selector;
               const titleSelector = args.title_selector;
+              const authorSelector = args.author_selector;
               const controlSelector = args.control_selector;
               const labels = args.labels || [];
               const norm = (s) => String(s || "").replace(/\\s+/g, "").toLowerCase();
@@ -374,6 +470,12 @@ def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, ob
                 const r = el.getBoundingClientRect();
                 const rowRect = row ? row.getBoundingClientRect() : null;
                 const rowTitles = row ? rowTitleValues(row) : [];
+                const rowAuthorText = row
+                  ? [...row.querySelectorAll(authorSelector)]
+                      .map((node) => String(node.innerText || node.title || "").trim())
+                      .filter(Boolean).join(" ")
+                  : "";
+                const rowIndex = row ? [...document.querySelectorAll(rowSelector)].indexOf(row) : index;
                 const matchingTitles = rowTitles.filter((item) => expected && item.compact === expected);
                 const titleRects = row
                   ? [...row.querySelectorAll(titleSelector)]
@@ -398,6 +500,8 @@ def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, ob
                   row_title_match: Boolean(matchingTitles.length),
                   row_title: matchingTitles[0]?.raw || rowTitles[0]?.raw || "",
                   row_titles: rowTitles.map((item) => item.raw),
+                  row_index: rowIndex,
+                  row_author_text: rowAuthorText,
                   page_title_match: Boolean(expected && norm(document.body?.innerText || "").includes(expected)),
                   row_y: rowRect ? Math.round(rowRect.y) : null,
                   row_h: rowRect ? Math.round(rowRect.height) : null,
@@ -419,22 +523,60 @@ def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, ob
             script_args,
         )
         candidates = [dict(candidate) for candidate in (raw_candidates or [])]
-        best = choose_wanfang_download_candidate(candidates, title=title)
-        if not best:
+        selection = _select_wanfang_download_candidate(
+            candidates,
+            title=title,
+            first_author=first_author,
+        )
+        candidate = selection.get("candidate")
+        evidence = {key: value for key, value in selection.items() if key != "candidate"}
+        if not selection.get("selected") or not isinstance(candidate, dict):
+            return {**evidence, "candidate_count": len(candidates)}
+        return {**evidence, **dict(candidate), "candidate_count": len(candidates)}
+    except Exception as exc:
+        return {"selected": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def click_wanfang_result_download(
+    page: Any,
+    *,
+    title: str = "",
+    first_author: str = "",
+    selection: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Revalidate and click an inspected Wanfang result-row control."""
+    expected = _compact_text(title)
+    script_args = {
+        "expected": expected,
+        "first_author": normalize_author_name(first_author),
+        "row_selector": WANFANG_RESULT_ROW_SELECTOR,
+        "title_selector": WANFANG_RESULT_TITLE_SELECTOR,
+        "author_selector": WANFANG_RESULT_AUTHOR_SELECTOR,
+        "control_selector": WANFANG_DOWNLOAD_CONTROL_SELECTOR,
+        "labels": sorted(WANFANG_DOWNLOAD_LABELS),
+    }
+    try:
+        inspected = dict(selection) if isinstance(selection, dict) else inspect_wanfang_result_download(
+            page,
+            title=title,
+            first_author=first_author,
+        )
+        if not inspected.get("selected"):
             return {
+                **inspected,
                 "clicked": False,
-                "result_found": False,
-                "reason": "no_exact_title_result" if expected else "no_download_control",
-                "candidate_count": len(candidates),
+                "result_found": bool(inspected.get("title_candidate_count")),
             }
         raw = page.evaluate(
             """(selection) => {
               const expected = selection.expected || "";
               const rowSelector = selection.row_selector;
               const titleSelector = selection.title_selector;
+              const authorSelector = selection.author_selector;
               const controlSelector = selection.control_selector;
               const labels = selection.labels || [];
               const norm = (s) => String(s || "").replace(/\\s+/g, "").toLowerCase();
+              const authorNorm = (s) => [...String(s || "").toLowerCase()].filter((c) => /[\\p{L}]/u.test(c)).join("");
               const visible = (el) => {
                 const r = el.getBoundingClientRect();
                 const s = getComputedStyle(el);
@@ -452,28 +594,43 @@ def click_wanfang_result_download(page: Any, *, title: str = "") -> dict[str, ob
               const href = el.href || "";
               const rowTitles = row ? rowTitleValues(row) : [];
               const rowTitleMatch = Boolean(rowTitles.find((item) => expected && item.compact === expected));
+              const rowAuthorText = row
+                ? [...row.querySelectorAll(authorSelector)]
+                    .map((node) => String(node.innerText || node.title || "").trim())
+                    .filter(Boolean).join(" ")
+                : "";
+              const rowAuthorMatch = !selection.author_required || authorNorm(rowAuthorText).includes(selection.first_author);
               if (
                 !visible(el) ||
                 !row ||
                 !labels.includes(text) ||
                 text !== selection.text ||
                 (selection.href && href !== selection.href) ||
-                (expected && !rowTitleMatch)
+                (expected && !rowTitleMatch) ||
+                !rowAuthorMatch
               ) {
                 return { clicked: false, result_found: false, reason: "candidate_changed" };
               }
               el.scrollIntoView({ block: "center", inline: "center" });
               el.click();
-              return { clicked: true, result_found: true, text, href, row_title: rowTitles[0]?.raw || "" };
+              return {
+                clicked: true,
+                result_found: true,
+                text,
+                href,
+                row_title: rowTitles[0]?.raw || "",
+                row_author_text: rowAuthorText,
+              };
             }""",
             {
                 **script_args,
-                "candidate_id": str(best.get("candidate_id") or ""),
-                "text": str(best.get("text") or ""),
-                "href": str(best.get("href") or ""),
+                "candidate_id": str(inspected.get("candidate_id") or ""),
+                "text": str(inspected.get("text") or ""),
+                "href": str(inspected.get("href") or ""),
+                "author_required": bool(inspected.get("author_disambiguation_used")),
             },
         )
-        result = {**best, **dict(raw or {}), "candidate_count": len(candidates)}
+        result = {**inspected, **dict(raw or {})}
         if result.get("href"):
             result["href"] = safe_wanfang_url(str(result["href"]))
         return result
@@ -527,6 +684,8 @@ def capture_wanfang_pdf(
     page: Any,
     *,
     title: str,
+    first_author: str = "",
+    selection: dict[str, object] | None = None,
     output_path: str | Path,
     timeout_ms: int = 90_000,
 ) -> dict[str, object]:
@@ -560,7 +719,12 @@ def capture_wanfang_pdf(
         pass
 
     detail: dict[str, object] = {
-        "download_click": click_wanfang_result_download(page, title=title),
+        "download_click": click_wanfang_result_download(
+            page,
+            title=title,
+            first_author=first_author,
+            selection=selection,
+        ),
         "popup_pages": [],
     }
     if not detail["download_click"].get("clicked"):
