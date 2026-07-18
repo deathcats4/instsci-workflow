@@ -191,7 +191,7 @@ references, or acknowledgements heading do not pass. This also fails closed for
 papers without an abstract: a title found later in body or reference text is not
 accepted as the downloaded paper's identity.
 
-For CNKI search mode, each record needs `record_id` and `title`; `url` is optional and used only as a fallback. Direct mode still requires a validated CNKI URL. Single-record CNKI downloads accept `--title`; InstSci marks `file_status=success` only when the first-page title block matches the title or the first page exposes the record id. A valid PDF that cannot be tied to the requested record is kept as `file_status=unverified` with `standard_status=pdf_candidate_conflict`.
+For CNKI search mode, each record needs `record_id` and `title`; `url` is optional and used only as a fallback. Direct mode still requires a validated CNKI URL. Single-record CNKI downloads require `--title`; InstSci marks `file_status=success` only when the first-page title block matches that title. `--record-id` is only a local output/manifest identifier and never counts as PDF identity evidence. A valid PDF that cannot be tied to the requested title is kept as `file_status=unverified` with `standard_status=pdf_candidate_conflict`.
 
 Before evaluating CNKI candidates, search mode requires visible relevance sorting
 to be active so older exact-title rows are not hidden by publication-time order.

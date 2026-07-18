@@ -208,9 +208,11 @@ instsci chinese-literature-sites
   direct article/download URLs are more likely to trigger click-word verification.
   When CNKI search opens a detail page, confirm the visible detail-page title or
   captured PDF text matches the requested title before marking success.
-  Single-record `cnki-fetch` needs `--title` or a text-visible record id before
-  a captured PDF can be marked `file_status=success`; otherwise keep it
-  `unverified/pdf_candidate_conflict`.
+  Single-record `cnki-fetch` requires `--title` in the bounded first-page title
+  block before a captured PDF can be marked `file_status=success`; otherwise
+  keep it `unverified/pdf_candidate_conflict`. Its `--record-id` is only a local
+  output/manifest identifier. Never use that arbitrary string as PDF identity
+  evidence, even when it appears on the first page.
 - After changing Chinese-portal selectors or identity logic, use a visible-browser
   smoke test with one duplicate exact title: run one true-first-author positive
   selection and one later-coauthor negative selection. Also run local extracted-text

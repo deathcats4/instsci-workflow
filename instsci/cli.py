@@ -1684,7 +1684,7 @@ def cnki_login(
 def cnki_fetch(
     url: str = typer.Argument(help="CNKI article URL saved in Zotero or copied from the article page."),
     record_id: str = typer.Option("cnki_article", "--record-id", help="Stable local identifier used for the output PDF name."),
-    title: str = typer.Option("", "--title", help="Expected article title. Required in the first-page title block unless record_id is found on the first page."),
+    title: str = typer.Option("", "--title", help="Expected article title. Required in the first-page title block to mark the PDF as verified success."),
     output: str = typer.Option("", "--output", "-o", help="Private run directory for PDF and browser evidence."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging."),
 ):
@@ -1779,17 +1779,12 @@ def cnki_fetch(
                 else ""
             )
             title_match = pdf_title_matches_first_page_block(first_page_text, title=title)
-            record_id_match = (
-                bool(record_id.strip() and record_id != "cnki_article")
-                and record_id.casefold() in first_page_text.casefold()
-            )
-            verified = valid_pdf and (title_match or record_id_match)
+            verified = valid_pdf and title_match
             report.update(result)
             report.update(
                 {
                     "article_url": safe_page_url(str(getattr(page, "url", "") or "")),
                     "title_match": title_match,
-                    "record_id_match": record_id_match,
                     "text_length": len(text),
                     "first_page_text_length": len(first_page_text),
                     "verified_match": verified,

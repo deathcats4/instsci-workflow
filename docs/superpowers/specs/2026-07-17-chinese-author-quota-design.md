@@ -77,6 +77,11 @@ or at obvious body prose; title occurrences elsewhere in the document do not
 count. A legitimate paper without an abstract can still pass when its title and
 signature precede the first body heading.
 
+For single-record `cnki-fetch`, `record_id` remains a local filename and
+manifest identifier only. It is not a parsed CNKI portal identifier and never
+substitutes for a first-page title-block match, even when the same arbitrary
+string occurs on the first page.
+
 When author disambiguation was used, InstSci extracts the immediately following
 signature author line from that same title block and compares only its first
 author. Names found only in the body, acknowledgements, or references do not
@@ -224,3 +229,6 @@ compatibility cases.
 14. A captured PDF title is accepted only from the bounded first-page title
     block. A no-abstract wrong PDF whose requested title and author occur only
     in body or reference text remains `unverified/pdf_candidate_conflict`.
+15. A single CNKI fetch with a mismatched title remains unverified when its
+    arbitrary local `record_id` appears on the first page; a matching title
+    succeeds regardless of the local identifier.
