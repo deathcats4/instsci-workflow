@@ -46,8 +46,10 @@ def request_with_retry(
         try:
             resp = requests.request(method, url, **kwargs)
             if resp.status_code == 429 or resp.status_code >= 500:
+                if resp.status_code == 429 and _quota_exhausted(resp):
+                    return resp
                 if attempt < max_retries:
-                    wait = retry_backoff ** attempt
+                    wait = _retry_after_seconds(resp) or retry_backoff ** attempt
                     logger.warning(
                         "HTTP %d for %s, retrying in %.1fs (attempt %d/%d)",
                         resp.status_code, url, wait, attempt + 1, max_retries,
@@ -68,3 +70,21 @@ def request_with_retry(
 
     # Should not reach here, but just in case
     return requests.request(method, url, **kwargs)
+
+
+def _quota_exhausted(resp: requests.Response) -> bool:
+    try:
+        return int(resp.headers.get("X-RateLimit-Remaining", "")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _retry_after_seconds(resp: requests.Response) -> float | None:
+    value = resp.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(seconds, 0.0)

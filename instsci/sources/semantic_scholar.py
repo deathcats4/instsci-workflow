@@ -12,6 +12,7 @@ from .errors import ProviderSearchError, classify_provider_exception
 logger = logging.getLogger(__name__)
 
 S2_API = "https://api.semanticscholar.org/graph/v1"
+S2_RECOMMENDATIONS_API = "https://api.semanticscholar.org/recommendations/v1/papers"
 S2_FIELDS = "title,authors,year,abstract,externalIds,journal,citationCount,url"
 MAX_RETRIES = 3
 
@@ -154,3 +155,65 @@ def get_paper(paper_id: str) -> SearchResult | None:
         s2_url=item.get("url", ""),
         paper_id=item.get("paperId", ""),
     )
+
+
+def _parse_paper_item(item: dict) -> SearchResult:
+    ext_ids = item.get("externalIds") or {}
+    authors_data = item.get("authors") or []
+    journal_data = item.get("journal") or {}
+    return SearchResult(
+        title=item.get("title", ""),
+        authors=[a.get("name", "") for a in authors_data if a.get("name")],
+        year=item.get("year"),
+        abstract=item.get("abstract") or "",
+        doi=ext_ids.get("DOI", ""),
+        arxiv_id=ext_ids.get("ArXiv", ""),
+        journal=journal_data.get("name", "") if isinstance(journal_data, dict) else str(journal_data),
+        citation_count=item.get("citationCount", 0),
+        s2_url=item.get("url", ""),
+        paper_id=item.get("paperId", ""),
+    )
+
+
+def recommend_papers(
+    positive_paper_ids: list[str],
+    negative_paper_ids: list[str] | None = None,
+    limit: int = 20,
+    *,
+    raise_on_error: bool = False,
+) -> list[SearchResult]:
+    """Return Semantic Scholar recommendations from positive/negative seeds."""
+    positives = [item for item in positive_paper_ids if item]
+    negatives = [item for item in (negative_paper_ids or []) if item]
+    if not positives:
+        return []
+    params = {"fields": S2_FIELDS, "limit": min(max(limit, 1), 500)}
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("S2_API_KEY", "")
+    if api_key:
+        headers["x-api-key"] = api_key
+    payload = {"positivePaperIds": positives, "negativePaperIds": negatives}
+    try:
+        resp = requests.post(
+            S2_RECOMMENDATIONS_API,
+            params=params,
+            json=payload,
+            headers=headers,
+            timeout=20,
+            verify=_SSL_VERIFY,
+        )
+        if resp.status_code == 429:
+            if raise_on_error:
+                raise ProviderSearchError("semantic_scholar", "rate_limited", "Semantic Scholar recommendations returned HTTP 429.")
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+    except ProviderSearchError:
+        raise
+    except requests.RequestException as exc:
+        logger.warning("Semantic Scholar recommendations failed: %s", exc)
+        if raise_on_error:
+            raise ProviderSearchError("semantic_scholar", classify_provider_exception(exc), str(exc)) from exc
+        return []
+    items = data.get("recommendedPapers") or data.get("data") or []
+    return [_parse_paper_item(item) for item in items if isinstance(item, dict)]

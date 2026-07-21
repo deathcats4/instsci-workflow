@@ -142,6 +142,10 @@ metadata, and identifiers. `select` writes both the DOI
 file consumed by `papers` and a neighboring `.selection.json` report that records
 selected, skipped, missing-DOI, and duplicate-DOI rows.
 
+For opt-in Search v2 hybrid retrieval, Search v2 artifact validation, live
+evaluation, and release-gate grading, see
+[docs/search-v2-usage.md](docs/search-v2-usage.md).
+
 ## Reading Results
 
 InstSci uses a three-layer result contract:
