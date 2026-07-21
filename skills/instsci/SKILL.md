@@ -1,6 +1,6 @@
 ---
 name: instsci
-description: Use when working with the InstSci project, publisher PDF retrieval, closed-access article verification, DOI batch downloads, CloakBrowser evidence, CARSI, Shibboleth, OpenAthens, WebVPN, publisher capability matrices, or InstSci CLI workflows.
+description: Use when working with the InstSci project, literature search, paper discovery, metadata lookup, result selection, Zotero handoff/sync, publisher PDF retrieval, closed-access article verification, DOI batch downloads, CloakBrowser evidence, CARSI, Shibboleth, OpenAthens, WebVPN, publisher capability matrices, or InstSci CLI workflows.
 ---
 
 # instsci
@@ -32,6 +32,26 @@ When InstSci MCP tools are available, use them as the structured context bridge 
 Use MCP `search_papers`, `get_paper_metadata`, and `fetch_paper` for metadata, Open Access lookup, DOI resolution, or non-final retrieval attempts. For publisher PDF downloads, closed-access verification, capability matrices, or final support verdicts, MCP is planning/context only; the actual evidence must come from the visible CloakBrowser workflow started by `instsci papers`, `instsci publisher-batch`, `PublisherBatchDownloader`, or `ACSCloakBatchDownloader`.
 
 If MCP output and repository files disagree, treat `AGENTS.md` plus `instsci/data/*.json` as the source of truth and mention the mismatch.
+
+## Literature Discovery
+
+When the user starts from a topic, title, author, keyword set, or broad research
+question rather than an existing DOI list, read
+`references/literature-search-workflow.md` and use the discovery-to-library
+path before PDF acquisition:
+
+```powershell
+instsci search "research topic" --limit 50 --year 2020- --output <run-dir>\search.json
+instsci select <run-dir>\search.json --indices "1,3-8" --output <run-dir>\selected_dois.txt
+instsci papers <run-dir>\selected_dois.txt --publisher auto --output <run-dir>\papers
+instsci zotero sync <run-dir>\papers --attachment-mode linked_file
+```
+
+Keep `legacy` search as the stable default unless the installed CLI explicitly
+supports and the user asks for an experimental Search v2 / `hybrid` run. Always
+check provider `source_status` before interpreting zero hits, preserve
+source-specific citation counts, and let the user review/select search results
+before acquiring PDFs.
 
 ## Evidence Standard
 
@@ -289,26 +309,9 @@ For final manifests, keep Markdown, CSV, and JSON counts consistent. `file_statu
 
 ## Zotero Sync
 
-Use the complete discovery-to-library path when the user starts from a topic
-rather than an existing DOI list:
-
-```powershell
-instsci search "research topic" --limit 50 --year 2020- --output .\runs\search.json
-instsci select .\runs\search.json --indices "1,3-8" --output .\runs\selected_dois.txt
-instsci papers .\runs\selected_dois.txt --publisher auto --output .\runs\papers
-instsci zotero sync .\runs\papers --attachment-mode linked_file
-```
-
-`search` queries Semantic Scholar, OpenAlex, and Crossref by default and merges
-records by normalized DOI. Title-and-year fallback is allowed only when at least
-one record lacks a DOI; conflicting non-empty DOI values remain separate. Treat
-citation counts as source-specific metadata; do not describe the maximum merged
-value as a single authoritative count. Check `source_status` before interpreting
-zero hits because a provider can be rate-limited or unavailable.
-`search --output` creates reviewable JSON or CSV. `select` uses one-based result
-indices, removes duplicate DOI values, skips rows without a DOI, and writes a
-neighboring selection report. Do not silently acquire every search hit when the
-user asked to review or choose papers first.
+When the user starts from a topic rather than an existing DOI list, use the
+Literature Discovery workflow first, then sync only reviewed and acquired
+results.
 
 After `papers` or `publisher-batch` writes a run manifest, keep Zotero as the long-term paper entry point:
 
@@ -362,7 +365,12 @@ private index. Any proposed public summary must be separately anonymized and pas
 
 ## Detailed Reference
 
-For recent gotchas, publisher-specific notes, visible-browser UI fallback steps, report-count rules, and verification commands, read `references/publisher-pdf-workflow.md` when the task touches publisher PDFs or DOI batches.
+For literature search, selection, provider status, Search v2 rollout, and
+discovery-to-Zotero routing, read
+`references/literature-search-workflow.md`. For recent publisher gotchas,
+publisher-specific notes, visible-browser UI fallback steps, report-count rules,
+and verification commands, read `references/publisher-pdf-workflow.md` when the
+task touches publisher PDFs or DOI batches.
 
 ## Safety
 
