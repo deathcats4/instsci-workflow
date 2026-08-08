@@ -44,6 +44,10 @@ instsci elsevier-setup --api-key YOUR_KEY --inst-token YOUR_TOKEN
 
 闭源全文授权和请求 IP 强相关。验证时 InstSci 会优先走 direct route，让 `api.elsevier.com` 使用校园网、学校 VPN、规则 VPN 或图书馆出口；只有 direct 失败或无授权时，才会尝试已配置的 connector/proxy。
 
+如果你开着梯子、Clash/TUN、系统代理或学校 VPN，注意保持出版社文章页、机构登录页、PDF 下载域名和 API 域名走同一个合法机构出口。常见异常不一定是验证码循环，也可能是 ScienceDirect 直接显示了非校园 IP、登录后仍提示无权限、文章页能打开但 PDF asset 下载失败，或普通浏览器和 InstSci/CloakBrowser 表现不同。
+
+遇到这种情况，不要直接批量重试；先给相关出版社域名做临时代理例外或校园出口规则，然后用一个 DOI 验证成功后再恢复批量下载。InstSci 不会自动修改你的系统代理、Clash/V2Ray 规则或 VPN 配置，也不要把真实 IP、代理地址、账号、cookies 写进日志或 issue。
+
 ## 5. 机构访问 session 会过期吗？
 
 会。学校/机构入口通常会在数小时到数天后过期。过期后重新登录即可：

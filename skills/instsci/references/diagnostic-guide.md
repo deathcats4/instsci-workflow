@@ -64,18 +64,27 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\instsci
 
 ## VPN and Routing Notes
 
-Different tools may route traffic differently from the regular browser. If a publisher works in a regular browser but not in CloakBrowser:
+Different tools may route traffic differently from the regular browser. Treat
+route consistency as a light onboarding or regression check: mention it when an
+environment, institution, publisher, browser profile, or proxy setup is new, or
+when a previously working route starts failing. Do not turn every successful run
+into a network audit.
 
-- verify whether the VPN/proxy applies to the CloakBrowser process
-- check whether rule mode excludes publisher domains from the wrong proxy route
-- try campus network or institution-supported route first
-- avoid changing global network policy blindly during a batch
+Mixed-egress symptoms include:
 
-If a publisher verification page loops after the user completes the visible
-challenge, stop batch retries and inspect route consistency before trying again:
+- a publisher page displays an unexpected public IP
+- institution login succeeds but the PDF route still shows purchase or no-access
+- the article page loads but PDF asset or API domains fail
+- a regular browser, CloakBrowser, and Python/API requests behave differently
+- CAPTCHA, Cloudflare, Turnstile, or other verification repeats after completion
 
-- check `Get-Command instsci -All`, `where.exe instsci`, and `python -c "import instsci; print(instsci.__version__); print(instsci.__file__)"` so the user is not running an old CLI
-- capture the current visible state with `instsci browser-doctor --publisher publisher-name --output .\runs\waf_diagnostic`
+When those symptoms appear, stop batch retries and inspect route consistency
+before trying again:
+
+- verify whether the VPN/proxy applies to the CloakBrowser process and API calls
+- check whether rule mode sends publisher domains through the wrong proxy route
+- try campus network or an institution-supported route first
+- capture visible state with `instsci browser-doctor --publisher publisher-name --output .\runs\route_diagnostic` when screenshot evidence is needed
 - inspect `instsci config-cmd --show` locally for access URL, connector URL, and Elsevier API configuration, but redact connector URLs before sharing because current CLI output may expose full route values
 - check shell and Codex environment proxy presence without printing values:
 
@@ -88,9 +97,10 @@ Get-ChildItem Env: |
   }
 ```
 
-- do not print, paste, log, or commit full proxy URLs, `.codex/env` contents, connector URLs, cookies, tokens, or institution-private route details
+- do not print, paste, log, or commit full proxy URLs, public IP addresses, `.codex/env` contents, connector URLs, cookies, tokens, or institution-private route details
 - do not treat generic local proxy ports, for example `127.0.0.1:7897`, as an InstSci campus connector unless that route is the user's institution-supported access path
-- keep the publisher article domain, institution-login domain, and PDF asset domain on the intended legal access route where possible
+- keep the publisher article domain, institution-login domain, PDF asset domain, and publisher API domain on the intended legal access route where possible
+- do not auto-modify system proxy, Clash/V2Ray rules, VPN settings, browser proxy, or OS network configuration
 - after changing routing, retry one DOI with `--mode diagnose`; do not resume a large batch first
 
 For Elsevier / ScienceDirect, check `api.elsevier.com`,
@@ -109,4 +119,3 @@ Use `--mode diagnose` or explicit focus mode for hard cases:
 ```powershell
 instsci papers doi_one.txt --publisher publisher-name --mode diagnose --watch-browser focus
 ```
-
